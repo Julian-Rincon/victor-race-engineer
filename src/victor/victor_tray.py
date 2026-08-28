@@ -21,10 +21,11 @@ except ImportError:
     from pystray import MenuItem as item, Menu
     from PIL import Image, ImageDraw
 
-ENGINEER_DIR = Path(__file__).parent
+ENGINEER_DIR = Path(__file__).resolve().parent          # src/victor/ (junto a engineer.py)
+_REPO_ROOT   = Path(__file__).resolve().parents[2]
 PID_FILE     = Path("/tmp/ac-engineer.pid")
 LOG_FILE     = Path("/tmp/ac-engineer.log")
-ICON_64      = ENGINEER_DIR / "victor_icon_64.png"
+ICON_64      = _REPO_ROOT / "assets" / "victor_icon_64.png"
 
 # ── estado ───────────────────────────────────────────────────────────────────────
 

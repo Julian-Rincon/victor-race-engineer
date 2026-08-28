@@ -4,7 +4,11 @@ Tests unitarios para las nuevas features de Victor.
 Ejecutar CON AC parado (no necesita audio real).
 """
 import sys, time, json, os, threading, collections
+from pathlib import Path
 from unittest import mock
+
+# src/victor/ en path (código reestructurado 2026-08-28; standalone no carga conftest)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "victor"))
 
 # Parchear módulos de audio antes de importar engineer
 sys.modules['pyaudio'] = mock.MagicMock()

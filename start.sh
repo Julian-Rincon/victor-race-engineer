@@ -2,7 +2,11 @@
 # Standalone launcher for AC Race Engineer (for testing without CM)
 set -euo pipefail
 
+# Raíz del repo (start.sh vive en la raíz). El código Python está en
+# src/victor/, los .exe del lector SHM en native/.
 ENGINEER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VICTOR_SRC="$ENGINEER_DIR/src/victor"
+NATIVE_DIR="$ENGINEER_DIR/native"
 PID_FILE="/tmp/ac-engineer.pid"
 SHM_PID_FILE="/tmp/ac-engineer-shm.pid"
 TRAY_PID_FILE="/tmp/ac-engineer-tray.pid"
@@ -72,7 +76,7 @@ _stop_tracked() {
 case "${1:-tray}" in
   tray)
     echo "[Victor] Iniciando bandeja del sistema..."
-    nohup python3 "$ENGINEER_DIR/victor_tray.py" \
+    nohup python3 "$VICTOR_SRC/victor_tray.py" \
       > "/tmp/ac-engineer-tray.log" 2>&1 &
     echo $! > "$TRAY_PID_FILE"
     echo "[Victor] Tray PID $! — icono en la bandeja del sistema"
@@ -84,17 +88,17 @@ case "${1:-tray}" in
     _stop_tracked "$PID_FILE" "Daemon anterior" "engineer\.py"
     _stop_tracked "$SHM_PID_FILE" "SHM reader anterior" "ac_shm_reader\.exe"
     sleep 0.5
-    rm -f "$ENGINEER_DIR"/ac_telemetry_fast.json \
-          "$ENGINEER_DIR"/ac_telemetry_slow.json \
-          "$ENGINEER_DIR"/ac_telemetry_fast.json.tmp \
-          "$ENGINEER_DIR"/ac_telemetry_slow.json.tmp
+    rm -f "$NATIVE_DIR"/ac_telemetry_fast.json \
+          "$NATIVE_DIR"/ac_telemetry_slow.json \
+          "$NATIVE_DIR"/ac_telemetry_fast.json.tmp \
+          "$NATIVE_DIR"/ac_telemetry_slow.json.tmp
 
     # Lanzar SHM reader como exe Windows via Wine (mismo prefix que AC)
     echo "[Victor] Iniciando SHM reader (ac_shm_reader.exe via Wine)..."
     AC_WINE="${PROTON_DIR:+$PROTON_DIR/files/bin/wine}"
     AC_WINEPREFIX="$AC_COMPAT_DATA/pfx"
     XAUTH_FILE=$(ls /run/user/$(id -u)/xauth_* 2>/dev/null | head -1)
-    if [[ -f "$AC_WINE" && -f "$ENGINEER_DIR/ac_shm_reader.exe" ]]; then
+    if [[ -f "$AC_WINE" && -f "$NATIVE_DIR/ac_shm_reader.exe" ]]; then
       WINEPREFIX="$AC_WINEPREFIX/" \
       WINEDEBUG=-all \
       WINENTSYNC=1 \
@@ -105,7 +109,7 @@ case "${1:-tray}" in
       XAUTHORITY="${XAUTH_FILE:-/run/user/$(id -u)/.Xauthority}" \
       WINEDLLPATH="$PROTON_DIR/files/lib/vkd3d:$PROTON_DIR/files/lib/wine" \
       LD_LIBRARY_PATH="$PROTON_DIR/files/lib" \
-      _spawn_detached "$AC_WINE" "$ENGINEER_DIR/ac_shm_reader.exe" \
+      _spawn_detached "$AC_WINE" "$NATIVE_DIR/ac_shm_reader.exe" \
         > "/tmp/ac-engineer-shm.log" 2>&1 &
       echo $! > "$SHM_PID_FILE"
       echo "[Victor] SHM reader PID $! — log en /tmp/ac-engineer-shm.log"
@@ -114,7 +118,7 @@ case "${1:-tray}" in
     fi
 
     echo "[Victor] Iniciando AI Race Engineer daemon..."
-    _spawn_detached python3 -u "$ENGINEER_DIR/engineer.py" \
+    _spawn_detached python3 -u "$VICTOR_SRC/engineer.py" \
       > "/tmp/ac-engineer.log" 2>/tmp/ac-engineer-alsa.log &
     echo $! > "$PID_FILE"
     echo "[Victor] Daemon PID $! — log en /tmp/ac-engineer.log"

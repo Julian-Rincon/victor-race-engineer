@@ -49,10 +49,12 @@ import victor_wake
 
 PIPER_MODEL  = str(cfg.PIPER_MODEL_PATH)
 _AC_BRIDGE_DIR = Path.home() / ".local/share/Steam/steamapps/common/assettocorsa/apps/python/ACEngineer"
-_ENGINEER_DIR  = Path(__file__).parent.resolve()
-# SHM reader (ac_shm_reader.exe via Wine) writes next to the exe — always writable
-TELEM_FAST_SHM  = str(_ENGINEER_DIR / "ac_telemetry_fast.json")
-TELEM_SLOW_SHM  = str(_ENGINEER_DIR / "ac_telemetry_slow.json")
+_REPO_ROOT     = Path(__file__).resolve().parents[2]
+_NATIVE_DIR    = _REPO_ROOT / "native"
+# SHM reader (ac_shm_reader.exe via Wine) writes next to the exe — always writable.
+# El exe vive en native/, así que sus JSON salen ahí (ver ac_shm_reader.c: GetModuleFileNameA).
+TELEM_FAST_SHM  = str(_NATIVE_DIR / "ac_telemetry_fast.json")
+TELEM_SLOW_SHM  = str(_NATIVE_DIR / "ac_telemetry_slow.json")
 # ACEngineer.py widget bridge writes here — fallback (widget must be open in AC)
 TELEM_FAST_BRIDGE = str(_AC_BRIDGE_DIR / "ac_telemetry_fast.json")
 TELEM_SLOW_BRIDGE = str(_AC_BRIDGE_DIR / "ac_telemetry_slow.json")

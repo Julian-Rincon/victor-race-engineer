@@ -12,11 +12,14 @@ Cómo funciona:
   Este script corre como proceso Wine (NO en AC's Python app system)
   y lee esas regiones directamente con ctypes, luego escribe JSON a /tmp/.
 
-Lanzar ANTES de que AC empiece (o en cualquier momento — reintenta solo):
+Lanzar ANTES de que AC empiece (o en cualquier momento — reintenta solo),
+desde la raíz del repo:
   WINEPREFIX=~/.local/share/Steam/steamapps/compatdata/244210/pfx \
-  wine python3 ~/Games/ac-engineer/ac_shm_reader.py
+  wine python3 src/victor/ac_shm_reader.py
 
-  O más simple: el start.sh lo lanzará automáticamente.
+Nota: esta es la implementación de referencia en Python (escribe a /tmp/).
+start.sh lanza la versión C compilada (native/ac_shm_reader.exe), que escribe
+los JSON en native/ junto al binario.
 """
 
 import ctypes

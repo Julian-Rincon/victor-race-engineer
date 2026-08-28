@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import resample_poly
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-import victor_config as cfg
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "victor"))
+import victor_config as cfg  # noqa: E402
 from victor_ears import SileroVad, SpeechGate, _VAD_FRAME  # noqa: E402
 
 PIPER_SR = 22050

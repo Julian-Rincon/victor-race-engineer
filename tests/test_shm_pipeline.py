@@ -18,7 +18,8 @@ import sys
 import time
 from pathlib import Path
 
-DIR = Path(__file__).resolve().parent
+# Los .exe (shm_simulator, ac_shm_reader) y los JSON que escriben viven en native/
+DIR = Path(__file__).resolve().parents[1] / "native"
 STEAM = Path.home() / ".local/share/Steam"
 WINE = STEAM / "compatibilitytools.d/GE-Proton10-34/files/bin/wine"
 PREFIX = STEAM / "steamapps/compatdata/244210/pfx"

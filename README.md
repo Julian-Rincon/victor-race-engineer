@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="victor_logo.png" alt="Victor" width="220">
+  <img src="assets/victor_logo.png" alt="Victor" width="220">
 </p>
 
 <h1 align="center">Victor — AI Race Engineer para Assetto Corsa</h1>
@@ -62,17 +62,28 @@ por si le sirve a alguien más de la comunidad de sim racing en Linux.
 Assetto Corsa (Wine/Proton)
    │  Shared Memory de Windows (acpmf_physics / graphics / static / crewchief)
    ▼
-ac_shm_reader.exe   (C, compilado con MinGW, corre con el wine del prefix de AC)
-   │  escribe JSON cada 100ms junto al propio .exe
+native/ac_shm_reader.exe   (C, compilado con MinGW, corre con el wine del prefix de AC)
+   │  escribe JSON cada 100ms junto al propio .exe (native/)
    ▼
-ac_telemetry_fast.json / ac_telemetry_slow.json
+native/ac_telemetry_fast.json / native/ac_telemetry_slow.json
    │
    ▼
-engineer.py   (daemon Linux — nada de esto corre bajo Wine)
+src/victor/engineer.py   (daemon Linux — nada de esto corre bajo Wine)
    ├─ victor_ears.py    → VAD real (Silero, ONNX) + gate de grabación
    ├─ victor_wake.py    → exige "Victor" antes de aceptar un comando
    ├─ victor_brain.py   → LLM multi-backend (Groq/Cerebras/NVIDIA/Gemini)
    └─ victor_memory.py  → memoria del piloto entre sesiones (JSON local)
+```
+
+## Estructura del repo
+
+```
+src/victor/   código del daemon (engineer.py) y módulos victor_*
+tests/        suite pytest moderna (test_v7_*) + bancos standalone viejos
+native/       fuentes C del lector SHM (ac_shm_reader.c, shm_simulator.c) y sus .exe
+assets/       íconos y logo
+data/ models/ voices/   assets no versionados (calibración, Silero VAD, voz Piper)
+start.sh      launcher
 ```
 
 La misma memoria compartida (`acpmf_*`) que usa CrewChief es la fuente de
@@ -95,8 +106,8 @@ reemplazarlo directamente.
 ## Instalación
 
 ```bash
-git clone git@github.com:Julian-Rincon/Victor---Race-Engineer-AC-.git
-cd Victor---Race-Engineer-AC-
+git clone git@github.com:Julian-Rincon/victor-race-engineer.git
+cd victor-race-engineer
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -108,21 +119,31 @@ descargables libremente):
 
 1. **Voz Piper** (TTS en español) — cualquier voz de
    [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/es)
-   sirve. Colocar el `.onnx` en `voices/<nombre>/model.onnx` y ajustar
-   `PIPER_MODEL_PATH` en `victor_config.py` si el nombre no coincide.
+   sirve. Colocar el `.onnx` en `voices/<nombre>/model.onnx` (en la raíz del
+   repo) y ajustar `PIPER_MODEL_PATH` en `src/victor/victor_config.py` si el
+   nombre no coincide.
 2. **Silero VAD v5** — descargar `silero_vad.onnx` de
    [snakers4/silero-vad](https://github.com/snakers4/silero-vad) y colocarlo
-   en `models/silero_vad.onnx`.
+   en `models/silero_vad.onnx` (en la raíz del repo).
 
 ### Compilar el lector de memoria compartida
 
+Las fuentes C y el binario viven en `native/`:
+
 ```bash
-x86_64-w64-mingw32-gcc -O2 -o ac_shm_reader.exe ac_shm_reader.c
+x86_64-w64-mingw32-gcc -O2 -o native/ac_shm_reader.exe native/ac_shm_reader.c
+```
+
+Para los tests del pipeline SHM sin AC también hace falta el simulador:
+
+```bash
+x86_64-w64-mingw32-gcc -O2 -o native/shm_simulator.exe native/shm_simulator.c
 ```
 
 Este `.exe` corre con el **mismo Wine/Proton que usa Assetto Corsa** — lee la
 memoria compartida de Windows que el juego expone y no se puede reemplazar
-por un lector nativo de Linux.
+por un lector nativo de Linux. Escribe los JSON de telemetría en `native/`,
+junto al propio binario.
 
 ### Configuración (API keys)
 
@@ -168,15 +189,15 @@ necesitan que le hables — hablan solas cuando corresponde.
 ## Tests
 
 ```bash
-python3 -m pytest test_v7_wake.py test_v7_ears.py test_v7_brain.py test_v7_memory.py -v
+python3 -m pytest tests/test_v7_wake.py tests/test_v7_ears.py tests/test_v7_brain.py tests/test_v7_memory.py -v
 ```
 
-Estos cuatro son la suite moderna, pensada para pytest limpio. Los demás
-`test_*.py` (`test_features.py`, `test_e2e_pipeline.py`, etc.) son bancos de
-prueba más viejos que simulan la memoria compartida de AC sin necesitar el
-juego corriendo — son scripts standalone, se corren uno por uno
-(`python3 test_shm_pipeline.py`), **no junto con pytest** en la misma
-invocación.
+Estos cuatro son la suite moderna, pensada para pytest limpio (`tests/conftest.py`
+pone `src/victor/` en el path). Los demás `test_*.py` (`test_features.py`,
+`test_e2e_pipeline.py`, etc.) son bancos de prueba más viejos que simulan la
+memoria compartida de AC sin necesitar el juego corriendo — son scripts
+standalone, se corren uno por uno (`python3 tests/test_shm_pipeline.py`), **no
+junto con pytest** en la misma invocación.
 
 ## Estado del proyecto
 

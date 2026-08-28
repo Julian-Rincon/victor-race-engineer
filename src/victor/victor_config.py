@@ -12,16 +12,18 @@ import json
 import os
 from pathlib import Path
 
-_DIR = Path(__file__).parent.resolve()
+_DIR  = Path(__file__).parent.resolve()          # src/victor/
+_ROOT = Path(__file__).resolve().parents[2]       # raíz del repo
 
 # .env de NEXUS — fuente única de API keys (el .env del viejo jarvis-ironman ya no existe)
 NEXUS_ENV_PATH = Path.home() / "Documentos/Proyectos/nexus-core/.env"
 
-# Assets locales (autocontenidos — copiados de nexus-core el 2026-07-05)
-PIPER_MODEL_PATH = _DIR / "voices/es_davefx_medium/model.onnx"
-SILERO_VAD_PATH  = _DIR / "models/silero_vad.onnx"
-CALIBRATION_PATH = _DIR / "data/victor_calibration.json"
-DRIVER_MEMORY_PATH = _DIR / "data/driver_memory.json"
+# Assets locales (autocontenidos — copiados de nexus-core el 2026-07-05).
+# Viven en la raíz del repo (no versionados), no junto al código en src/victor/.
+PIPER_MODEL_PATH = _ROOT / "voices/es_davefx_medium/model.onnx"
+SILERO_VAD_PATH  = _ROOT / "models/silero_vad.onnx"
+CALIBRATION_PATH = _ROOT / "data/victor_calibration.json"
+DRIVER_MEMORY_PATH = _ROOT / "data/driver_memory.json"
 
 
 def _load_dotenv(p: Path) -> dict:

@@ -10,7 +10,11 @@ Tests v6: mejoras post-auditoría (2026-07-03).
 Ejecutar CON AC parado:  python3 test_v6_improvements.py
 """
 import sys
+from pathlib import Path
 from unittest import mock
+
+# src/victor/ en path (código reestructurado 2026-08-28; standalone no carga conftest)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "victor"))
 
 sys.modules['pyaudio'] = mock.MagicMock()
 _piper_mock = mock.MagicMock()

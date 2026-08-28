@@ -15,6 +15,9 @@ import time
 from pathlib import Path
 from unittest import mock
 
+# src/victor/ en path (código reestructurado 2026-08-28; standalone no carga conftest)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "victor"))
+
 sys.modules['pyaudio'] = mock.MagicMock()
 _piper_mock = mock.MagicMock()
 _piper_mock.PiperVoice.load.return_value = mock.MagicMock()
