@@ -1,106 +1,118 @@
-#!/usr/bin/env python3
-"""
-Tests v6: mejoras post-auditoría (2026-07-03).
+"""v6 — mejoras post-auditoría (2026-07-03), migrado a pytest 2026-08-28.
 
 1. fuel_laps calculado desde el histórico de vueltas (la fuente SHM no lo trae)
 2. Splits acumulados desde transiciones de sector (SHM trae sector_index +
    last_sector_ms, no arrays de splits)
 3. Gating por status del juego (LIVE=2): sin alertas en menú/replay/pausa
 
-Ejecutar CON AC parado:  python3 test_v6_improvements.py
+No necesita AC ni audio real. Antes era un script standalone con check()/sys.exit().
 """
-import sys
-from pathlib import Path
-from unittest import mock
+from __future__ import annotations
 
-# src/victor/ en path (código reestructurado 2026-08-28; standalone no carga conftest)
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "victor"))
-
-sys.modules['pyaudio'] = mock.MagicMock()
-_piper_mock = mock.MagicMock()
-_piper_mock.PiperVoice.load.return_value = mock.MagicMock()
-sys.modules['piper'] = _piper_mock
-sys.modules['piper.voice'] = _piper_mock
-
-import engineer as eng  # noqa: E402
-
-PASS = []
-FAIL = []
-
-
-def check(name, cond, extra=""):
-    (PASS if cond else FAIL).append(name)
-    print(f"  [{'OK ' if cond else 'FAIL'}] {name}" + (f"  {extra}" if extra and not cond else ""))
+import pytest
 
 
 # ─── 1. fuel_laps desde histórico ────────────────────────────────────────────
-print("[1] _calc_fuel_laps")
-eng._lap_history.clear()
-check("sin histórico → 0.0", eng._calc_fuel_laps(30.0) == 0.0)
 
-for lap, used in ((1, 2.0), (2, 2.2), (3, 2.1)):
-    eng._lap_history.append(eng.LapRecord(lap=lap, time_ms=95000, fuel_used=used, pos=3))
-got = eng._calc_fuel_laps(10.5)
-check("promedio últimas 3 vueltas (10.5L / 2.1L/v = 5.0v)", abs(got - 5.0) < 0.01, f"got={got}")
-check("fuel 0 → 0.0", eng._calc_fuel_laps(0.0) == 0.0)
+@pytest.fixture
+def fuel(eng):
+    eng._lap_history.clear()
+    yield eng
+    eng._lap_history.clear()
 
-# Outlier de vuelta en pits (consumo ~0) se ignora
-eng._lap_history.append(eng.LapRecord(lap=4, time_ms=180000, fuel_used=0.01, pos=3))
-got = eng._calc_fuel_laps(10.5)
-check("vuelta de pits (0.01L) ignorada", abs(got - 5.0) < 0.01, f"got={got}")
+
+def test_fuel_laps_without_history_is_zero(fuel):
+    assert fuel._calc_fuel_laps(30.0) == 0.0
+
+
+def test_fuel_laps_averages_last_three_laps(fuel):
+    for lap, used in ((1, 2.0), (2, 2.2), (3, 2.1)):
+        fuel._lap_history.append(fuel.LapRecord(lap=lap, time_ms=95000, fuel_used=used, pos=3))
+    # 10.5 L / 2.1 L·vuelta ≈ 5.0 vueltas
+    assert fuel._calc_fuel_laps(10.5) == pytest.approx(5.0, abs=0.01)
+
+
+def test_fuel_laps_with_zero_fuel_is_zero(fuel):
+    for lap, used in ((1, 2.0), (2, 2.2), (3, 2.1)):
+        fuel._lap_history.append(fuel.LapRecord(lap=lap, time_ms=95000, fuel_used=used, pos=3))
+    assert fuel._calc_fuel_laps(0.0) == 0.0
+
+
+def test_fuel_laps_ignores_pit_lap_outlier(fuel):
+    for lap, used in ((1, 2.0), (2, 2.2), (3, 2.1)):
+        fuel._lap_history.append(fuel.LapRecord(lap=lap, time_ms=95000, fuel_used=used, pos=3))
+    fuel._lap_history.append(fuel.LapRecord(lap=4, time_ms=180000, fuel_used=0.01, pos=3))
+    assert fuel._calc_fuel_laps(10.5) == pytest.approx(5.0, abs=0.01), "la vuelta de pits (0.01 L) no debe bajar el promedio"
+
 
 # ─── 2. Splits por transiciones de sector ────────────────────────────────────
-print("\n[2] _ingest_sector")
-eng._reset_sector_state()
 
-# Vuelta 5: sector 0 → 1 → 2 → (vuelta 6) 0
-eng._ingest_sector(0, 0, 5)          # arranque de vuelta, nada que registrar
-eng._ingest_sector(1, 30500, 5)      # completó S1 en 30500
-eng._ingest_sector(2, 31200, 5)      # completó S2 en 31200
-eng._ingest_sector(0, 29900, 6)      # completó S3 → vuelta cerrada
-check("last_splits de la vuelta = [30500, 31200, 29900]",
-      eng._last_lap_splits() == [30500, 31200, 29900], f"got={eng._last_lap_splits()}")
-check("best_splits inicial = primera vuelta completa",
-      eng._best_sector_splits() == [30500, 31200, 29900])
+@pytest.fixture
+def sectors(eng):
+    eng._reset_sector_state()
+    return eng
 
-# Vuelta 6: mejora S2, empeora S1
-eng._ingest_sector(1, 30800, 6)
-eng._ingest_sector(2, 30900, 6)
-eng._ingest_sector(0, 30100, 7)
-check("last_splits vuelta 6", eng._last_lap_splits() == [30800, 30900, 30100])
-check("best elementwise (ideal lap) = [30500, 30900, 29900]",
-      eng._best_sector_splits() == [30500, 30900, 29900], f"got={eng._best_sector_splits()}")
 
-# Sector repetido (mismo paquete varias veces) no duplica
-eng._ingest_sector(1, 31000, 7)
-eng._ingest_sector(1, 31000, 7)
-eng._ingest_sector(2, 30000, 7)
-eng._ingest_sector(0, 30000, 8)
-check("paquetes repetidos no rompen la vuelta",
-      eng._last_lap_splits() == [31000, 30000, 30000])
+def _run_lap(eng, s1, s2, s3, lap):
+    """Vuelta completa: sector 0→1→2→(vuelta+1) 0."""
+    eng._ingest_sector(1, s1, lap)
+    eng._ingest_sector(2, s2, lap)
+    eng._ingest_sector(0, s3, lap + 1)
 
-# Vuelta incompleta (entró a pits, se saltó sectores) no contamina best
-eng._reset_sector_state()
-eng._ingest_sector(0, 0, 1)
-eng._ingest_sector(2, 45000, 1)      # salto 0→2 (telemetría perdida)
-eng._ingest_sector(0, 31000, 2)
-check("vuelta incompleta → last_splits vacío", eng._last_lap_splits() == [])
 
-# ─── 3. Gating por status ────────────────────────────────────────────────────
-print("\n[3] _is_live")
-t = eng.Telemetry()
-t.status = 2
-check("LIVE (2) → True", eng._is_live(t) is True)
-for s, name in ((0, "OFF"), (1, "REPLAY"), (3, "PAUSE")):
-    t.status = s
-    check(f"{name} ({s}) → False", eng._is_live(t) is False)
+def test_last_splits_of_completed_lap(sectors):
+    sectors._ingest_sector(0, 0, 5)  # arranque de vuelta
+    _run_lap(sectors, 30500, 31200, 29900, lap=5)
+    assert sectors._last_lap_splits() == [30500, 31200, 29900]
 
-t_default = eng.Telemetry()
-check("default del dataclass es LIVE (compat con bridge sin status)",
-      eng._is_live(t_default) is True)
 
-# ─── RESUMEN ─────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"  {len(PASS)} OK, {len(FAIL)} FAIL" + (f" → {FAIL}" if FAIL else ""))
-print("=" * 60)
-sys.exit(1 if FAIL else 0)
+def test_best_splits_seeded_from_first_full_lap(sectors):
+    sectors._ingest_sector(0, 0, 5)
+    _run_lap(sectors, 30500, 31200, 29900, lap=5)
+    assert sectors._best_sector_splits() == [30500, 31200, 29900]
+
+
+def test_best_splits_are_elementwise_ideal_lap(sectors):
+    sectors._ingest_sector(0, 0, 5)
+    _run_lap(sectors, 30500, 31200, 29900, lap=5)
+    _run_lap(sectors, 30800, 30900, 30100, lap=6)  # mejora S2, empeora S1
+    assert sectors._last_lap_splits() == [30800, 30900, 30100]
+    assert sectors._best_sector_splits() == [30500, 30900, 29900]
+
+
+def test_repeated_sector_packets_do_not_duplicate(sectors):
+    sectors._ingest_sector(0, 0, 5)
+    _run_lap(sectors, 30500, 31200, 29900, lap=5)
+    _run_lap(sectors, 30800, 30900, 30100, lap=6)
+    sectors._ingest_sector(1, 31000, 7)
+    sectors._ingest_sector(1, 31000, 7)  # duplicado
+    sectors._ingest_sector(2, 30000, 7)
+    sectors._ingest_sector(0, 30000, 8)
+    assert sectors._last_lap_splits() == [31000, 30000, 30000]
+
+
+def test_incomplete_lap_does_not_contaminate_best(sectors):
+    sectors._ingest_sector(0, 0, 1)
+    sectors._ingest_sector(2, 45000, 1)  # salto 0→2 (telemetría perdida)
+    sectors._ingest_sector(0, 31000, 2)
+    assert sectors._last_lap_splits() == []
+
+
+# ─── 3. Gating por status del juego ──────────────────────────────────────────
+
+def test_is_live_true_for_status_live(eng):
+    t = eng.Telemetry()
+    t.status = 2
+    assert eng._is_live(t) is True
+
+
+@pytest.mark.parametrize("status, name", [(0, "OFF"), (1, "REPLAY"), (3, "PAUSE")])
+def test_is_live_false_for_non_live_status(eng, status, name):
+    t = eng.Telemetry()
+    t.status = status
+    assert eng._is_live(t) is False
+
+
+def test_is_live_default_dataclass_is_live(eng):
+    """Compat con el bridge viejo que no manda status."""
+    assert eng._is_live(eng.Telemetry()) is True

@@ -79,7 +79,7 @@ src/victor/engineer.py   (daemon Linux — nada de esto corre bajo Wine)
 
 ```
 src/victor/   código del daemon (engineer.py) y módulos victor_*
-tests/        suite pytest moderna (test_v7_*) + bancos standalone viejos
+tests/        suite pytest completa — unit + bancos SHM/e2e (marcados slow)
 native/       fuentes C del lector SHM (ac_shm_reader.c, shm_simulator.c) y sus .exe
 assets/       íconos y logo
 data/ models/ voices/   assets no versionados (calibración, Silero VAD, voz Piper)
@@ -188,16 +188,20 @@ necesitan que le hables — hablan solas cuando corresponde.
 
 ## Tests
 
+Toda la suite corre con `pytest` a secas:
+
 ```bash
-python3 -m pytest tests/test_v7_wake.py tests/test_v7_ears.py tests/test_v7_brain.py tests/test_v7_memory.py -v
+python3 -m pytest                 # todo (incluye los bancos SHM/e2e bajo wine)
+python3 -m pytest -m "not slow"    # rápido — omite los que lanzan wine/Proton
 ```
 
-Estos cuatro son la suite moderna, pensada para pytest limpio (`tests/conftest.py`
-pone `src/victor/` en el path). Los demás `test_*.py` (`test_features.py`,
-`test_e2e_pipeline.py`, etc.) son bancos de prueba más viejos que simulan la
-memoria compartida de AC sin necesitar el juego corriendo — son scripts
-standalone, se corren uno por uno (`python3 tests/test_shm_pipeline.py`), **no
-junto con pytest** en la misma invocación.
+`tests/conftest.py` pone `src/victor/` en el path y expone la fixture `eng`
+(importa `engineer` con las deps de audio stubbeadas). Los tests marcados
+`slow` (`test_shm_pipeline.py`, `test_e2e_pipeline.py`) lanzan
+`shm_simulator.exe` + `ac_shm_reader.exe` bajo el Wine de Proton para validar
+el pipeline de memoria compartida sin AC; se saltan solos si Wine o los `.exe`
+no están, o si AC está corriendo. Compilá los `.exe` (ver arriba) para
+ejecutarlos.
 
 ## Estado del proyecto
 

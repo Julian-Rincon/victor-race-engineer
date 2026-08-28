@@ -1,46 +1,41 @@
-#!/usr/bin/env python3
-"""
-E2E: shm_simulator.exe → ac_shm_reader.exe (wine real) → engineer._file_worker.
+"""E2E: native/shm_simulator.exe -> native/ac_shm_reader.exe (wine real) ->
+engineer._file_worker. Migrado a pytest 2026-08-28.
 
 Valida que el ingeniero ingiere los archivos REALES escritos por el lector:
-conexión, track, track_len (spotter habilitado), status, oponentes con
-nombres, y el mapa de pilotos por posición. Sin audio (mocks).
+conexión, track, track_len (spotter habilitado), status, oponentes con nombres,
+y el mapa de pilotos por posición. Sin audio (el TTS se captura).
 
-Ejecutar CON AC parado:  python3 test_e2e_pipeline.py
+Marcado `slow`: lanza wine/Proton. Se salta si wine/los .exe no están o si AC
+está corriendo. `pytest -m "not slow"` lo excluye.
 """
+from __future__ import annotations
+
 import subprocess
-import sys
 import threading
 import time
-from pathlib import Path
-from unittest import mock
+from dataclasses import replace
 
-# src/victor/ en path (código reestructurado 2026-08-28; standalone no carga conftest)
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "victor"))
+import pytest
 
-sys.modules['pyaudio'] = mock.MagicMock()
-_piper_mock = mock.MagicMock()
-_piper_mock.PiperVoice.load.return_value = mock.MagicMock()
-sys.modules['piper'] = _piper_mock
-sys.modules['piper.voice'] = _piper_mock
+from _wine_support import NATIVE_DIR, WINE_BIN, ac_is_running, requires_wine, wine_env
 
-import engineer as eng  # noqa: E402
-from test_shm_pipeline import wine_env, WINE, DIR, FAST, SLOW  # noqa: E402
+pytestmark = [pytest.mark.slow, requires_wine]
 
-eng._tts_pq.put = lambda item: None  # mudo
-
-PASS, FAIL = [], []
+FAST = NATIVE_DIR / "ac_telemetry_fast.json"
+SLOW = NATIVE_DIR / "ac_telemetry_slow.json"
 
 
-def check(name, cond, extra=""):
-    (PASS if cond else FAIL).append(name)
-    print(f"  [{'OK ' if cond else 'FAIL'}] {name}" + (f"  {extra}" if extra and not cond else ""))
+@pytest.fixture(scope="module")
+def ingested(eng):
+    """Corre el pipeline completo bajo wine y arranca eng._file_worker hasta que
+    el ingeniero reporta conexión. Devuelve un snapshot inmutable de su estado:
+    (telemetry, connected, drivers)."""
+    if ac_is_running():
+        pytest.skip("Assetto Corsa está corriendo — cerralo primero")
 
+    orig_put = eng._tts_pq.put
+    eng._tts_pq.put = lambda item: None  # mudo durante la ingesta
 
-def main() -> int:
-    if subprocess.run(["pgrep", "-f", "acs.exe"], capture_output=True).returncode == 0:
-        print("AC está corriendo — cierra el juego primero.")
-        return 2
     subprocess.run(["pkill", "-f", "shm_simulator.exe"], capture_output=True)
     subprocess.run(["pkill", "-f", "ac_shm_reader.exe"], capture_output=True)
     time.sleep(1)
@@ -48,59 +43,95 @@ def main() -> int:
     SLOW.unlink(missing_ok=True)
 
     env = wine_env()
-    print("[1/3] Simulador + reader bajo wine ...")
-    sim = subprocess.Popen([str(WINE), str(DIR / "shm_simulator.exe")], env=env,
+    sim = subprocess.Popen([str(WINE_BIN), str(NATIVE_DIR / "shm_simulator.exe")], env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(6)
-    rdr = subprocess.Popen([str(WINE), str(DIR / "ac_shm_reader.exe")], env=env,
+    rdr = subprocess.Popen([str(WINE_BIN), str(NATIVE_DIR / "ac_shm_reader.exe")], env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline and not (FAST.exists() and SLOW.exists()):
+            time.sleep(0.5)
+        if not (FAST.exists() and SLOW.exists()):
+            pytest.fail("TIMEOUT esperando los JSON del lector")
 
-    deadline = time.time() + 30
-    while time.time() < deadline and not (FAST.exists() and SLOW.exists()):
-        time.sleep(0.5)
-    if not (FAST.exists() and SLOW.exists()):
-        print("TIMEOUT esperando JSONs del reader")
-        sim.terminate(); rdr.terminate()
-        return 1
+        threading.Thread(target=eng._file_worker, daemon=True, name="telem-test").start()
+        deadline = time.time() + 10
+        while time.time() < deadline and not eng._connected:
+            time.sleep(0.2)
+        time.sleep(2.5)  # dejar que procese el slow packet + varios fast
 
-    print("[2/3] Arrancando _file_worker del ingeniero ...")
-    threading.Thread(target=eng._file_worker, daemon=True, name="telem").start()
-    deadline = time.time() + 10
-    while time.time() < deadline and not eng._connected:
-        time.sleep(0.2)
-    time.sleep(2.5)  # dejar que procese slow packet + varios fast
-
-    print("[3/3] Verificando estado interno del ingeniero ...")
-    with eng._lock:
-        t = eng._current
-    check("conectado", eng._connected is True)
-    check("track", t.track == "ks_test_track", f"got={t.track!r}")
-    check("car", t.car == "test_car_gt3", f"got={t.car!r}")
-    check("session RACE", t.session == 2, f"got={t.session}")
-    check("track_len llegó (spotter habilitado)", abs(t.track_len - 4318.0) < 1, f"got={t.track_len}")
-    check("status LIVE", t.status == 2, f"got={t.status}")
-    check("fuel", abs(t.fuel - 33.5) < 0.01, f"got={t.fuel}")
-    check("posición P3", t.position == 3, f"got={t.position}")
-    check("2 rivales en cars_data", len(t.cars_data) == 2, f"got={len(t.cars_data)}")
-    check("sector_index", t.sector_index == 1, f"got={t.sector_index}")
-    names = {c.get("driver_name") for c in t.cars_data}
-    check("nombres de rivales", names == {"Ayrton Senna", "Alain Prost"}, f"got={names}")
-    with eng._drivers_lock:
-        drivers = dict(eng._drivers)
-    check("mapa pilotos por posición (P1=Prost)",
-          drivers.get(1, {}).get("name") == "Alain Prost", f"got={drivers}")
-    check("mapa pilotos (P2=Senna)",
-          drivers.get(2, {}).get("name") == "Ayrton Senna", f"got={drivers}")
-
-    sim.terminate(); rdr.terminate()
-    subprocess.run(["pkill", "-f", "shm_simulator.exe"], capture_output=True)
-    subprocess.run(["pkill", "-f", "ac_shm_reader.exe"], capture_output=True)
-
-    print("\n" + "=" * 60)
-    print(f"  {len(PASS)} OK, {len(FAIL)} FAIL" + (f" → {FAIL}" if FAIL else ""))
-    print("=" * 60)
-    return 1 if FAIL else 0
+        with eng._lock:
+            snap_current = replace(eng._current)
+        with eng._drivers_lock:
+            snap_drivers = dict(eng._drivers)
+        yield snap_current, eng._connected, snap_drivers
+    finally:
+        sim.terminate()
+        rdr.terminate()
+        subprocess.run(["pkill", "-f", "shm_simulator.exe"], capture_output=True)
+        subprocess.run(["pkill", "-f", "ac_shm_reader.exe"], capture_output=True)
+        FAST.unlink(missing_ok=True)
+        SLOW.unlink(missing_ok=True)
+        eng._connected = False
+        eng._tts_pq.put = orig_put
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@pytest.fixture(scope="module")
+def telem(ingested):
+    return ingested[0]
+
+
+def test_engineer_reports_connected(ingested):
+    assert ingested[1] is True
+
+
+def test_track_name_ingested(telem):
+    assert telem.track == "ks_test_track"
+
+
+def test_car_model_ingested(telem):
+    assert telem.car == "test_car_gt3"
+
+
+def test_session_type_is_race(telem):
+    assert telem.session == 2
+
+
+def test_track_len_ingested_enables_spotter(telem):
+    assert abs(telem.track_len - 4318.0) < 1
+
+
+def test_status_is_live(telem):
+    assert telem.status == 2
+
+
+def test_fuel_ingested(telem):
+    assert abs(telem.fuel - 33.5) < 0.01
+
+
+def test_position_ingested(telem):
+    assert telem.position == 3
+
+
+def test_two_rivals_in_cars_data(telem):
+    assert len(telem.cars_data) == 2
+
+
+def test_sector_index_ingested(telem):
+    assert telem.sector_index == 1
+
+
+def test_rival_names_ingested(telem):
+    names = {c.get("driver_name") for c in telem.cars_data}
+    assert names == {"Ayrton Senna", "Alain Prost"}
+
+
+def test_driver_map_position_one_is_prost(ingested):
+    _telem, _connected, drivers = ingested
+    assert drivers.get(1, {}).get("name") == "Alain Prost"
+
+
+def test_driver_map_position_two_is_senna(ingested):
+    _telem, _connected, drivers = ingested
+    assert drivers.get(2, {}).get("name") == "Ayrton Senna"

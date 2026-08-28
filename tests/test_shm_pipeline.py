@@ -1,68 +1,36 @@
-#!/usr/bin/env python3
+"""Pipeline SHM de Victor SIN Assetto Corsa. Migrado a pytest 2026-08-28.
+
+  native/shm_simulator.exe  (crea páginas acpmf_* con valores conocidos, offsets
+  del C# de CrewChief)  ->  native/ac_shm_reader.exe  ->  ac_telemetry_{fast,slow}.json
+
+Valida campo a campo que el lector interpreta el layout correctamente y que emite
+todo lo que engineer.py necesita (track_len, status, oponentes, etc.).
+
+Marcado `slow`: lanza wine/Proton. Se salta solo si wine o los .exe no están, o
+si AC está corriendo. `pytest -m "not slow"` lo excluye.
 """
-Test end-to-end del pipeline SHM de Victor SIN Assetto Corsa:
+from __future__ import annotations
 
-  shm_simulator.exe (crea páginas acpmf_* con valores conocidos, offsets del
-  C# de CrewChief)  →  ac_shm_reader.exe  →  ac_telemetry_{fast,slow}.json
-
-Valida campo a campo que el lector interpreta el layout correctamente y que
-emite todo lo que engineer.py necesita (track_len, status, oponentes, etc.).
-
-Ejecutar:  python3 test_shm_pipeline.py     (con AC CERRADO)
-"""
 import json
-import os
-import signal
 import subprocess
-import sys
 import time
-from pathlib import Path
 
-# Los .exe (shm_simulator, ac_shm_reader) y los JSON que escriben viven en native/
-DIR = Path(__file__).resolve().parents[1] / "native"
-STEAM = Path.home() / ".local/share/Steam"
-WINE = STEAM / "compatibilitytools.d/GE-Proton10-34/files/bin/wine"
-PREFIX = STEAM / "steamapps/compatdata/244210/pfx"
-FAST = DIR / "ac_telemetry_fast.json"
-SLOW = DIR / "ac_telemetry_slow.json"
+import pytest
 
-FAILS = []
+from _wine_support import NATIVE_DIR, WINE_BIN, ac_is_running, requires_wine, wine_env
+
+pytestmark = [pytest.mark.slow, requires_wine]
+
+FAST = NATIVE_DIR / "ac_telemetry_fast.json"
+SLOW = NATIVE_DIR / "ac_telemetry_slow.json"
 
 
-def check(name, got, want, tol=None):
-    if tol is not None:
-        ok = got is not None and abs(got - want) <= tol
-    else:
-        ok = got == want
-    mark = "OK " if ok else "FAIL"
-    print(f"  [{mark}] {name}: {got!r}" + ("" if ok else f"  (esperado {want!r})"))
-    if not ok:
-        FAILS.append(name)
-
-
-def wine_env():
-    env = os.environ.copy()
-    xauth = sorted(Path(f"/run/user/{os.getuid()}").glob("xauth_*"))
-    env.update({
-        "WINEPREFIX": str(PREFIX) + "/",
-        "WINEDEBUG": "-all",
-        "WINENTSYNC": "1",
-        "WINEESYNC": "1",
-        "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
-        "XAUTHORITY": str(xauth[0]) if xauth else "",
-        "WINEDLLPATH": f"{STEAM}/compatibilitytools.d/GE-Proton10-34/files/lib/vkd3d:"
-                       f"{STEAM}/compatibilitytools.d/GE-Proton10-34/files/lib/wine",
-        "LD_LIBRARY_PATH": f"{STEAM}/compatibilitytools.d/GE-Proton10-34/files/lib",
-    })
-    env.setdefault("DISPLAY", ":0")
-    return env
-
-
-def main() -> int:
-    if subprocess.run(["pgrep", "-f", "AssettoCorsa.exe|acs.exe"],
-                      capture_output=True).returncode == 0:
-        print("AC está corriendo — cierra el juego para usar el simulador.")
-        return 2
+@pytest.fixture(scope="module")
+def telemetry():
+    """Lanza simulador + lector bajo wine una sola vez y devuelve
+    {"fast": dict, "slow": dict} con lo que escribió el lector."""
+    if ac_is_running():
+        pytest.skip("Assetto Corsa está corriendo — cerralo para usar el simulador")
 
     subprocess.run(["pkill", "-f", "shm_simulator.exe"], capture_output=True)
     subprocess.run(["pkill", "-f", "ac_shm_reader.exe"], capture_output=True)
@@ -71,106 +39,156 @@ def main() -> int:
         f.unlink(missing_ok=True)
 
     env = wine_env()
-    print("[1/4] Lanzando shm_simulator.exe ...")
-    sim = subprocess.Popen([str(WINE), str(DIR / "shm_simulator.exe")], env=env,
+    sim = subprocess.Popen([str(WINE_BIN), str(NATIVE_DIR / "shm_simulator.exe")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    time.sleep(6)  # dejar que wineserver arranque y las páginas existan
-
-    print("[2/4] Lanzando ac_shm_reader.exe ...")
-    rdr = subprocess.Popen([str(WINE), str(DIR / "ac_shm_reader.exe")], env=env,
+    time.sleep(6)  # que wineserver arranque y las páginas existan
+    rdr = subprocess.Popen([str(WINE_BIN), str(NATIVE_DIR / "ac_shm_reader.exe")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if FAST.exists() and SLOW.exists():
+                break
+            time.sleep(0.5)
+        else:
+            rdr.terminate()
+            log = (rdr.stdout.read() or b"").decode(errors="replace")[-2000:]
+            pytest.fail(f"el lector no escribió los JSON en 30 s. Log:\n{log}")
+        time.sleep(1.5)  # un par de ciclos más
 
-    print("[3/4] Esperando JSONs ...")
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if FAST.exists() and SLOW.exists():
-            break
-        time.sleep(0.5)
-    else:
-        print("TIMEOUT: el reader no escribió los JSON. Log del reader:")
-        rdr.terminate()
-        print((rdr.stdout.read() or b"").decode(errors="replace")[-2000:])
+        yield {"fast": json.loads(FAST.read_text()), "slow": json.loads(SLOW.read_text())}
+    finally:
         sim.terminate()
-        return 1
-    time.sleep(1.5)  # un par de ciclos más
+        rdr.terminate()
+        subprocess.run(["pkill", "-f", "shm_simulator.exe"], capture_output=True)
+        subprocess.run(["pkill", "-f", "ac_shm_reader.exe"], capture_output=True)
+        FAST.unlink(missing_ok=True)
+        SLOW.unlink(missing_ok=True)
 
-    fast = json.loads(FAST.read_text())
-    slow = json.loads(SLOW.read_text())
 
-    print("[4/4] Verificando campos ...")
-    print("── fast (physics/graphics) ──")
-    check("speed", fast.get("speed"), 123.4, tol=0.11)
-    check("rpm", fast.get("rpm"), 5500)
-    check("gear", fast.get("gear"), 4)
-    check("fuel", fast.get("fuel"), 33.5, tol=0.01)
-    check("lap", fast.get("lap"), 5)
-    check("position", fast.get("position"), 3)
-    check("lap_time_ms", fast.get("lap_time_ms"), 61234)
-    check("best_lap_ms", fast.get("best_lap_ms"), 94500)
-    check("last_lap_ms", fast.get("last_lap_ms"), 95321)
-    check("spline", fast.get("spline"), 0.421337, tol=1e-5)
-    check("tyre_compound", fast.get("tyre_compound"), "Soft (S)")
-    check("tyre_fl", fast.get("tyre_fl"), 82.1, tol=0.05)
-    check("tyre_wear_fr", fast.get("tyre_wear_fr"), 93.2, tol=0.05)
-    check("wx", fast.get("wx"), 100.5, tol=0.01)
-    check("wz", fast.get("wz"), -200.25, tol=0.01)
-    check("vx", fast.get("vx"), 1.5, tol=0.01)
-    check("vz", fast.get("vz"), 34.2, tol=0.01)
-    check("dmg_front", fast.get("dmg_front"), 10.0, tol=0.05)
-    check("cars", fast.get("cars"), 3)
+@pytest.fixture(scope="module")
+def fast(telemetry):
+    return telemetry["fast"]
 
-    print("── fast (campos que engineer.py NECESITA) ──")
-    check("track_len", fast.get("track_len"), 4318.0, tol=0.5)
-    check("status (LIVE=2)", fast.get("status"), 2)
-    check("sector_index", fast.get("sector_index"), 1)
-    check("last_sector_ms", fast.get("last_sector_ms"), 30500)
-    check("in_pitlane", fast.get("in_pitlane"), False)
 
-    print("── fast.cars_data (oponentes vía crewchief SHM) ──")
-    cars = fast.get("cars_data", [])
-    check("n oponentes", len(cars), 2)
-    senna = next((c for c in cars if c.get("driver_name") == "Ayrton Senna"), None)
-    prost = next((c for c in cars if c.get("driver_name") == "Alain Prost"), None)
-    check("Senna presente", senna is not None, True)
-    check("Prost presente", prost is not None, True)
-    if senna:
-        check("Senna race_pos", senna.get("race_pos"), 2)
-        check("Senna spline", senna.get("spline"), 0.4230, tol=1e-4)
-        check("Senna speed km/h", senna.get("speed"), 124.2, tol=0.2)
-        check("Senna lap", senna.get("lap"), 5)
-        check("Senna wx", senna.get("wx"), 104.5, tol=0.01)
-        check("Senna wz", senna.get("wz"), -198.0, tol=0.01)
-        check("Senna in_pit", senna.get("in_pit"), False)
-    if prost:
-        check("Prost race_pos", prost.get("race_pos"), 1)
+@pytest.fixture(scope="module")
+def slow(telemetry):
+    return telemetry["slow"]
 
-    print("── slow (static/session) ──")
-    check("track", slow.get("track"), "ks_test_track")
-    check("track_layout", slow.get("track_layout"), "layout_a")
-    check("car", slow.get("car"), "test_car_gt3")
-    check("session", slow.get("session"), 2)
-    check("time_left", slow.get("time_left"), 1800)
 
-    print("── slow.all_drivers (nombres por posición) ──")
+# ─── fast: física / gráficos ─────────────────────────────────────────────────
+
+FAST_FIELDS = [
+    ("speed", 123.4, 0.11),
+    ("rpm", 5500, None),
+    ("gear", 4, None),
+    ("fuel", 33.5, 0.01),
+    ("lap", 5, None),
+    ("position", 3, None),
+    ("lap_time_ms", 61234, None),
+    ("best_lap_ms", 94500, None),
+    ("last_lap_ms", 95321, None),
+    ("spline", 0.421337, 1e-5),
+    ("tyre_compound", "Soft (S)", None),
+    ("tyre_fl", 82.1, 0.05),
+    ("tyre_wear_fr", 93.2, 0.05),
+    ("wx", 100.5, 0.01),
+    ("wz", -200.25, 0.01),
+    ("vx", 1.5, 0.01),
+    ("vz", 34.2, 0.01),
+    ("dmg_front", 10.0, 0.05),
+    ("cars", 3, None),
+    # campos que engineer.py NECESITA
+    ("track_len", 4318.0, 0.5),
+    ("status", 2, None),
+    ("sector_index", 1, None),
+    ("last_sector_ms", 30500, None),
+    ("in_pitlane", False, None),
+]
+
+
+@pytest.mark.parametrize("key, expected, tol", FAST_FIELDS, ids=[f[0] for f in FAST_FIELDS])
+def test_fast_field(fast, key, expected, tol):
+    got = fast.get(key)
+    if tol is None:
+        assert got == expected
+    else:
+        assert got is not None and abs(got - expected) <= tol, f"{key}: {got!r} != {expected!r} (±{tol})"
+
+
+# ─── fast: oponentes vía crewchief SHM ───────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def opponents(fast):
+    return fast.get("cars_data", [])
+
+
+def _by_name(cars, name):
+    return next((c for c in cars if c.get("driver_name") == name), None)
+
+
+def test_two_opponents(opponents):
+    assert len(opponents) == 2
+
+
+def test_senna_present(opponents):
+    assert _by_name(opponents, "Ayrton Senna") is not None
+
+
+def test_prost_present(opponents):
+    assert _by_name(opponents, "Alain Prost") is not None
+
+
+@pytest.mark.parametrize("key, expected, tol", [
+    ("race_pos", 2, None),
+    ("spline", 0.4230, 1e-4),
+    ("speed", 124.2, 0.2),
+    ("lap", 5, None),
+    ("wx", 104.5, 0.01),
+    ("wz", -198.0, 0.01),
+    ("in_pit", False, None),
+])
+def test_senna_field(opponents, key, expected, tol):
+    senna = _by_name(opponents, "Ayrton Senna")
+    assert senna is not None
+    got = senna.get(key)
+    if tol is None:
+        assert got == expected
+    else:
+        assert abs(got - expected) <= tol, f"Senna {key}: {got!r} != {expected!r} (±{tol})"
+
+
+def test_prost_race_pos(opponents):
+    assert _by_name(opponents, "Alain Prost").get("race_pos") == 1
+
+
+# ─── slow: static / session ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("key, expected", [
+    ("track", "ks_test_track"),
+    ("track_layout", "layout_a"),
+    ("car", "test_car_gt3"),
+    ("session", 2),
+    ("time_left", 1800),
+])
+def test_slow_field(slow, key, expected):
+    assert slow.get(key) == expected
+
+
+# ─── slow: all_drivers (nombres por posición) ────────────────────────────────
+
+@pytest.fixture(scope="module")
+def drivers_by_pos(slow):
     drivers = slow.get("all_drivers", {})
-    check("n drivers", len(drivers), 3)
-    by_pos = {v.get("pos"): v.get("name") for v in drivers.values()} if drivers else {}
-    check("P1", by_pos.get(1), "Alain Prost")
-    check("P2", by_pos.get(2), "Ayrton Senna")
-    check("P3", by_pos.get(3), "Julian Rincon")
-
-    sim.terminate()
-    rdr.terminate()
-    subprocess.run(["pkill", "-f", "shm_simulator.exe"], capture_output=True)
-    subprocess.run(["pkill", "-f", "ac_shm_reader.exe"], capture_output=True)
-
-    print()
-    if FAILS:
-        print(f"RESULTADO: {len(FAILS)} fallos → {FAILS}")
-        return 1
-    print("RESULTADO: pipeline SHM completo OK ✓")
-    return 0
+    return {v.get("pos"): v.get("name") for v in drivers.values()}, drivers
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_three_drivers(drivers_by_pos):
+    _by_pos, drivers = drivers_by_pos
+    assert len(drivers) == 3
+
+
+@pytest.mark.parametrize("pos, name", [(1, "Alain Prost"), (2, "Ayrton Senna"), (3, "Julian Rincon")])
+def test_driver_at_position(drivers_by_pos, pos, name):
+    by_pos, _drivers = drivers_by_pos
+    assert by_pos.get(pos) == name
