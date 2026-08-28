@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Los PR cancelan corridas viejas al hacer push; main siempre corre entero.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pytest:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test deps
+        # Solo lo que necesita `pytest -m "not slow"`:
+        #  - engineer.py se importa con piper/pyaudio stubbeados (fixture `eng`
+        #    en tests/conftest.py) -> no hace falta piper-tts ni pyaudio
+        #  - test_v7_ears se salta solo sin los modelos de voz (voices/ y models/
+        #    no están versionados) -> no hace falta onnxruntime
+        #  - numpy/scipy/requests sí se importan a nivel de módulo
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy scipy requests
+
+      - name: Run tests (excluye slow — Wine + .exe nativos, no corren en el runner)
+        run: pytest -m "not slow"
