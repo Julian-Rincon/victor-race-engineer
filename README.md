@@ -9,6 +9,12 @@
   español, corriendo 100% nativo en Linux.
 </p>
 
+<p align="center">
+  <a href="https://github.com/Julian-Rincon/victor-race-engineer/actions/workflows/ci.yml">
+    <img src="https://github.com/Julian-Rincon/victor-race-engineer/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+</p>
+
 ---
 
 ## ¿Qué es esto?
@@ -202,6 +208,23 @@ python3 -m pytest -m "not slow"    # rápido — omite los que lanzan wine/Proto
 el pipeline de memoria compartida sin AC; se saltan solos si Wine o los `.exe`
 no están, o si AC está corriendo. Compilá los `.exe` (ver arriba) para
 ejecutarlos.
+
+### `test_v7_ears` — 10 skips esperados sin los modelos
+
+`test_v7_ears.py` ejercita el VAD real: sintetiza voz con Piper y la pasa por
+Silero VAD (ONNX), sin mocks. Necesita los dos assets de terceros que **no van
+en el repo** (ver "Assets de voz y VAD" arriba): `voices/es_davefx_medium/model.onnx`
+y `models/silero_vad.onnx`, más `onnxruntime` y `piper-tts` instalados.
+
+Si esos archivos no están, los 10 tests se marcan `skipped` (no `failed`) — es
+el comportamiento esperado, y es lo que pasa en CI (el runner no descarga
+modelos). Para correrlos localmente:
+
+```bash
+pip install onnxruntime piper-tts          # además de pytest numpy scipy requests
+# colocá los .onnx en voices/ y models/ (enlaces en "Assets de voz y VAD")
+python3 -m pytest tests/test_v7_ears.py -v  # 10 passed
+```
 
 ## Estado del proyecto
 
