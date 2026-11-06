@@ -36,20 +36,21 @@ PROTON_DIR="$(_resolve_proton_dir || true)"
 AC_PROTON="${PROTON_DIR:+$PROTON_DIR/proton}"
 
 _spawn_detached() {
-  # --fork fuerza que setsid siempre bifurque un hijo nuevo. Sin esto, si
-  # quien invoca este script tiene control de trabajos activo (`set -m`,
-  # ej. una shell interactiva), setsid bifurca IGUAL por su cuenta pero el
-  # PID que queda en "$!" es el del proceso padre que termina casi al
-  # instante — el proceso real sigue vivo con un PID nunca registrado en el
-  # PID file, y _stop_tracked no lo puede matar ni encontrar (kill -0
-  # falla, y como el PID file SÍ existe tampoco cae al fallback por
-  # nombre). --fork deja el comportamiento igual sin importar el contexto
-  # de quien llama.
+  # Uso: _spawn_detached <pidfile> <cmd...>
+  # El proceso escribe SU PROPIO PID (bash -c 'echo $$' + exec conserva el
+  # PID) en vez de confiar en "$!". Antes se usaba `setsid --fork` + `$!`:
+  # --fork hace que setsid bifurque y salga, así que "$!" era el PID del
+  # setsid padre ya muerto — `status` decía "Detenido" con Victor vivo y
+  # `stop` no lo mataba (quedaba huérfano con el micrófono abierto).
+  # Verificado 2026-11-05: PID file 465969 vs engineer.py real 465971.
+  local pidfile="$1"; shift
+  rm -f "$pidfile"
   if command -v setsid >/dev/null 2>&1; then
-    exec setsid --fork "$@"
+    setsid --fork bash -c 'echo $$ > "$0"; exec "$@"' "$pidfile" "$@"
   else
-    exec nohup "$@"
+    nohup bash -c 'echo $$ > "$0"; exec "$@"' "$pidfile" "$@" &
   fi
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$pidfile" ]] && return 0; sleep 0.1; done
 }
 
 # Mata por PID file cuando existe (solo la instancia que ESTE script lanzó);
@@ -109,19 +110,17 @@ case "${1:-tray}" in
       XAUTHORITY="${XAUTH_FILE:-/run/user/$(id -u)/.Xauthority}" \
       WINEDLLPATH="$PROTON_DIR/files/lib/vkd3d:$PROTON_DIR/files/lib/wine" \
       LD_LIBRARY_PATH="$PROTON_DIR/files/lib" \
-      _spawn_detached "$AC_WINE" "$NATIVE_DIR/ac_shm_reader.exe" \
-        > "/tmp/ac-engineer-shm.log" 2>&1 &
-      echo $! > "$SHM_PID_FILE"
-      echo "[Victor] SHM reader PID $! — log en /tmp/ac-engineer-shm.log"
+      _spawn_detached "$SHM_PID_FILE" "$AC_WINE" "$NATIVE_DIR/ac_shm_reader.exe" \
+        > "/tmp/ac-engineer-shm.log" 2>&1
+      echo "[Victor] SHM reader PID $(cat "$SHM_PID_FILE" 2>/dev/null) — log en /tmp/ac-engineer-shm.log"
     else
       echo "[Victor] WARN: Wine de Proton o ac_shm_reader.exe no encontrado"
     fi
 
     echo "[Victor] Iniciando AI Race Engineer daemon..."
-    _spawn_detached python3 -u "$VICTOR_SRC/engineer.py" \
-      > "/tmp/ac-engineer.log" 2>/tmp/ac-engineer-alsa.log &
-    echo $! > "$PID_FILE"
-    echo "[Victor] Daemon PID $! — log en /tmp/ac-engineer.log"
+    _spawn_detached "$PID_FILE" python3 -u "$VICTOR_SRC/engineer.py" \
+      > "/tmp/ac-engineer.log" 2>/tmp/ac-engineer-alsa.log
+    echo "[Victor] Daemon PID $(cat "$PID_FILE" 2>/dev/null) — log en /tmp/ac-engineer.log"
     ;;
 
   stop)

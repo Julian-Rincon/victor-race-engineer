@@ -1024,7 +1024,11 @@ MODOS DE COMUNICACIÓN (adapta el tono al momento):
 
 REGLAS:
 - MÁXIMO 2 frases. Urgencia = frase corta.
-- USA SIEMPRE el nombre del rival. NUNCA "el de adelante" ni "P3".
+- NUNCA INVENTES DATOS: nombres, gaps, tiempos o daños que no estén en el contexto NO existen.
+  Los nombres de los ejemplos (Torres, García) son ilustrativos, jamás los uses. Si falta un dato,
+  dilo en pocas palabras ("sin datos de rivales ahora").
+- Usa el nombre del rival cuando el contexto lo trae; si no, "el de adelante" está bien.
+- Texto plano, sin markdown, asteriscos ni emojis: todo se lee en voz alta.
 - Pit: "Box en esta vuelta." Tiempos: "más tres décimas". Posición: "segundo", nunca "P2".
 - Las groserías solo en situaciones de impacto real (choque o jugada sucia). Una sola, al principio.
 - Después de la reacción emocional, vuelve al modo profesional con datos.
@@ -1150,7 +1154,7 @@ def _ctx() -> str:
         f"{nat_pos} | V{t.lap} | {t.speed:.0f}km/h\n"
         f"Comb: {t.fuel:.1f}L (~{t.fuel_laps:.1f}v) | "
         f"Neumáticos{compound}: FL{t.tyre_fl:.0f} FR{t.tyre_fr:.0f} "
-        f"RL{t.tyre_rl:.0f} RR{t.tyre_rr:.0f}°C (max{tmax:.0f}) desgaste≥{twear_min:.0f}%"
+        f"RL{t.tyre_rl:.0f} RR{t.tyre_rr:.0f}°C (max{tmax:.0f}) vida_gomas_min={twear_min:.0f}% (100%=nuevas)"
     )
     if gap_info:
         ctx += f"\nGaps: {gap_info}"
@@ -1173,11 +1177,11 @@ def _ctx() -> str:
     return ctx
 
 
-def _groq(user_msg: str, max_tokens: int = 110) -> str:
+def _groq(user_msg: str, max_tokens: int = 110, allow_local: bool = False) -> str:
     # BUG FIX: snapshot convo under lock to avoid race between concurrent LLM threads
     with _convo_lock:
         messages = list(_convo) + [{"role": "user", "content": user_msg}]
-    reply = _brain.complete(_SYSTEM, messages, max_tokens=max_tokens)
+    reply = _brain.complete(_SYSTEM, messages, max_tokens=max_tokens, allow_local=allow_local)
     if not reply:
         print(f"[Brain] Todos los backends caídos ({_brain.status()})")
         return ""
@@ -1216,7 +1220,8 @@ def _speakable(text: str) -> str:
     de 16", "104°C" -> "104 grados C", "+0.32s vs tu mejor" -> "más 0.32 SVS
     tu mejor", "102.345s" -> "102.345 As". Se aplica a TODO lo que se
     sintetiza, incluidas las respuestas del LLM."""
-    t = _re.sub(r"\s*[—–]\s*", ", ", text)
+    t = _re.sub(r"[*_`#]+", "", text)        # markdown que el LLM a veces cuela
+    t = _re.sub(r"\s*[—–]\s*", ", ", t)
     t = _re.sub(r"(\d+(?:[.,]\d+)?)\s*°\s*C\b", r"\1 grados", t)
     t = _re.sub(r"\b(\d{1,2})°", lambda m: _ordinal(int(m.group(1))), t)
     t = _re.sub(r"\bP(\d{1,2})\b", lambda m: _ordinal(int(m.group(1))), t)
@@ -2040,7 +2045,7 @@ def _session_briefing(t: Telemetry):
             f"1) Ajuste específico de alerón trasero + presiones de neumáticos para esta combinación coche-pista.\n"
             f"2) Si el combustible cargado es suficiente y si el compuesto es el correcto para la pista."
         )
-        r = _groq(prompt, max_tokens=130)
+        r = _groq(prompt, max_tokens=130, allow_local=True)
         if r:
             _say(f"Briefing de pre-carrera. {r}")
         else:
@@ -2056,7 +2061,7 @@ def _session_briefing(t: Telemetry):
             f"En 2 frases máximo: cuándo salir a hacer la vuelta rápida (gestión del tráfico y "
             f"temperatura de gomas), y el foco técnico clave para la vuelta de clasificación en esta pista."
         )
-        r = _groq(prompt, max_tokens=110)
+        r = _groq(prompt, max_tokens=110, allow_local=True)
         if r:
             _say(f"Clasificación. {r}")
 
@@ -2069,7 +2074,7 @@ def _session_briefing(t: Telemetry):
             f"En 2 frases: qué priorizar en esta sesión de práctica (calentamiento, "
             f"búsqueda de límites, ajuste de setup) y una referencia de ritmo esperado."
         )
-        r = _groq(prompt, max_tokens=110)
+        r = _groq(prompt, max_tokens=110, allow_local=True)
         if r:
             _say(f"Práctica. {r}")
 
@@ -2079,7 +2084,7 @@ def _session_briefing(t: Telemetry):
             f"HOTLAP / TIME ATTACK en {t.track}. Coche: {t.car}.\n"
             f"En 1 frase: el punto técnico más importante para una vuelta rápida en esta pista."
         )
-        r = _groq(prompt, max_tokens=80)
+        r = _groq(prompt, max_tokens=80, allow_local=True)
         if r:
             _say(r)
 
@@ -2191,7 +2196,7 @@ def _post_race_debrief(t: Telemetry, laps: list):
         f"{pace_note}{zone_note}\n\n"
         f"Da un debrief de ingeniero WEC en 3 frases: resultado, punto fuerte del stint y qué mejorar."
     )
-    r = _groq(prompt, max_tokens=160)
+    r = _groq(prompt, max_tokens=160, allow_local=True)
     if r:
         _say(f"Debrief de carrera. {r}")
     else:
@@ -2229,7 +2234,7 @@ def _local_reply(kind: str, t: Telemetry) -> str:
     if kind == "tyres":
         wear = min(t.tyre_wear_fl, t.tyre_wear_fr, t.tyre_wear_rl, t.tyre_wear_rr)
         return (f"Delanteras {t.tyre_fl:.0f} y {t.tyre_fr:.0f} grados, traseras {t.tyre_rl:.0f} y "
-                f"{t.tyre_rr:.0f}. Desgaste mínimo {wear:.0f} por ciento.")
+                f"{t.tyre_rr:.0f}. Les queda {wear:.0f} por ciento de vida.")
     if kind == "damage":
         worst = max(t.dmg_front, t.dmg_rear, t.dmg_left, t.dmg_right)
         if worst < 1:
@@ -2390,7 +2395,7 @@ def _handle_voice(wav_path: str):
             prompt = (
                 f"Piloto pregunta neumáticos. "
                 f"FL{t.tyre_fl:.0f}°C FR{t.tyre_fr:.0f}°C RL{t.tyre_rl:.0f}°C RR{t.tyre_rr:.0f}°C. "
-                f"Desgaste mínimo: {min_w:.0f}%.\n{ctx}"
+                f"Vida restante mínima de las gomas: {min_w:.0f}% (100% = nuevas; preocupa por debajo de ~70%).\n{ctx}"
             )
 
         elif hit(_PIT_KW):
@@ -2402,7 +2407,7 @@ def _handle_voice(wav_path: str):
             prompt = (
                 f"Piloto pregunta estrategia de pit. "
                 f"Consumo promedio {avg_fpl:.2f}L/v. Fuel laps: {t.fuel_laps:.1f}. "
-                f"Desgaste neumáticos mínimo {min(t.tyre_wear_fl,t.tyre_wear_fr,t.tyre_wear_rl,t.tyre_wear_rr):.0f}%.\n{ctx}"
+                f"Vida restante mínima de las gomas {min(t.tyre_wear_fl,t.tyre_wear_fr,t.tyre_wear_rl,t.tyre_wear_rr):.0f}% (100% = nuevas).\n{ctx}"
             )
 
         elif hit(_POS_KW):
@@ -2436,7 +2441,8 @@ def _handle_voice(wav_path: str):
             kind = "free"
             prompt = f"{ctx}\n\nPregunta libre del piloto: {text}"
 
-        reply = _groq(prompt)
+        # LLM local (CPU) solo donde aporta: preguntas abiertas y setup.
+        reply = _groq(prompt, allow_local=kind in ("free", "setup"))
         if not reply:
             # Sin LLM (sin red, keys caídas, modelos retirados): Victor antes se
             # quedaba CALLADO ante cualquier pregunta. Ahora responde con los
@@ -2645,6 +2651,8 @@ def main():
               "datos de telemetría. Pon tus keys en ~/.config/victor/victor.env "
               "(ver .env.example) o define VICTOR_ENV_FILE.")
     victor_brain.preload_local_stt()
+    if cfg.LOCAL_LLM_MODEL:
+        threading.Thread(target=victor_brain.ensure_local_llm, daemon=True, name="llm-local").start()
 
     # start.sh stop manda SIGTERM: sin esto, morir a mitad de una frase dejaba
     # el juego con el volumen agachado hasta reiniciarlo.

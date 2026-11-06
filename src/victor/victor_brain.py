@@ -57,13 +57,15 @@ class _ModelGone(Exception):
 
 def _is_reasoning_model(model: str) -> bool:
     m = model.lower()
-    return "gpt-oss" in m or "qwen3" in m or "qwen-3" in m
+    return any(k in m for k in ("gpt-oss", "qwen3", "qwen-3", "nemotron", "deepseek-r",
+                                 "reason", "thinking"))
 
 
 def pick_model(available: list[str], prefs: list[str]) -> Optional[str]:
     """Primer modelo de `available` que contenga la preferencia más alta.
     Ignora modelos que no son de chat (whisper, tts, embeddings, guard)."""
-    skip = ("whisper", "tts", "embed", "guard", "vision", "audio", "image", "playai", "orpheus")
+    skip = ("whisper", "tts", "embed", "guard", "vision", "audio", "image", "playai", "orpheus",
+            "safety", "code", "omni", "-vl")
     chat = [m for m in available if not any(x in m.lower() for x in skip)]
     for pref in prefs:
         hits = sorted(m for m in chat if pref in m.lower())
@@ -84,6 +86,7 @@ class _Backend:
     # Margen extra de tokens para modelos de razonamiento (ver docstring).
     reasoning_reserve: int = 0
     healed: bool = False
+    kind: str = "openai"            # "openai" | "ollama"
 
     def available(self) -> bool:
         return bool(self.api_key) and time.time() >= self.paused_until
@@ -131,11 +134,18 @@ class VictorBrain:
             _Backend("nvidia",   cfg.NVIDIA_API_KEY,   "https://integrate.api.nvidia.com/v1",     cfg.NVIDIA_MODEL),
             _Backend("gemini",   cfg.GEMINI_API_KEY,
                      "https://generativelanguage.googleapis.com/v1beta/openai", cfg.GEMINI_MODEL),
+            _Backend("mistral",  cfg.MISTRAL_API_KEY,  "https://api.mistral.ai/v1",               cfg.MISTRAL_MODEL),
+            _Backend("openrouter", cfg.OPENROUTER_API_KEY, "https://openrouter.ai/api/v1",        cfg.OPENROUTER_MODEL,
+                     reasoning_reserve=250),
         ]
         if cfg.CUSTOM_LLM_BASE_URL and cfg.CUSTOM_LLM_MODEL:
             self.backends.insert(0, _Backend("custom", cfg.CUSTOM_LLM_API_KEY,
                                              cfg.CUSTOM_LLM_BASE_URL, cfg.CUSTOM_LLM_MODEL,
                                              reasoning_reserve=250))
+        if cfg.LOCAL_LLM_MODEL:
+            # Último de la cadena: solo si toda la nube falla.
+            self.backends.append(_Backend("local", "local", cfg.LOCAL_LLM_URL,
+                                          cfg.LOCAL_LLM_MODEL, kind="ollama"))
         self.last_backend: Optional[str] = None
 
     def _headers(self, b: _Backend) -> dict:
@@ -149,31 +159,58 @@ class VictorBrain:
 
     def _heal(self, b: _Backend) -> bool:
         """Cambia b.model por uno vivo. Solo una vez por backend y sesión."""
-        if b.healed:
+        if b.healed or b.kind != "openai":
             return False
         b.healed = True
         try:
-            new = pick_model(self.list_models(b), cfg.MODEL_PREFERENCES.get(b.name, []))
+            models = self.list_models(b)
+            if b.name == "openrouter":          # solo gratis
+                models = [m for m in models if m.endswith(":free")]
+            new = pick_model(models, cfg.MODEL_PREFERENCES.get(b.name, []))
         except Exception as e:
             print(f"[Brain:{b.name}] no pude listar modelos: {e}")
             return False
+        if b.name == "openrouter" and new and not new.endswith(":free"):
+            new = None                  # jamás cambiar a un modelo de pago
         if not new or new == b.model:
             return False
         print(f"[Brain:{b.name}] modelo '{b.model}' retirado -> uso '{new}'")
         b.model = new
         return True
 
+    def _call_ollama(self, b: _Backend, system: str, messages: list, max_tokens: int, timeout: float) -> str:
+        r = _session.post(f"{b.base_url}/api/chat", timeout=max(timeout, 25.0), json={
+            "model": b.model, "stream": False, "think": False, "keep_alive": "15m",
+            "messages": [{"role": "system", "content": system}] + messages,
+            # num_gpu=0: NUNCA cargar capas en la GPU (es del juego).
+            "options": {"num_gpu": 0, "num_thread": cfg.LOCAL_LLM_THREADS,
+                        "num_predict": max_tokens, "temperature": 0.3},
+        })
+        if r.status_code == 404:
+            raise _ModelGone(f"ollama: {r.text[:120]}")
+        r.raise_for_status()
+        content = (r.json().get("message", {}).get("content") or "").strip()
+        if not content:
+            raise ValueError("ollama: respuesta vacía")
+        return content
+
     def _call_one(self, b: _Backend, system: str, messages: list, max_tokens: int, timeout: float) -> str:
+        if b.kind == "ollama":
+            return self._call_ollama(b, system, messages, max_tokens, timeout)
         payload = {
             "model": b.model,
             "messages": [{"role": "system", "content": system}] + messages,
             "max_tokens": max_tokens + (b.reasoning_reserve if _is_reasoning_model(b.model) else 0),
             "temperature": 0.3,
         }
-        if _is_reasoning_model(b.model) and b.name in ("groq", "cerebras"):
+        if _is_reasoning_model(b.model) and b.name in ("groq", "cerebras", "openrouter"):
             payload["reasoning_effort"] = "low"
         r = _session.post(f"{b.base_url}/chat/completions", headers=self._headers(b),
                           json=payload, timeout=timeout)
+        if r.status_code == 429 and r.headers.get("x-ratelimit-limit-req-minute") == "0":
+            # Mistral sin plan activo responde 429 con límite 0: no es un
+            # límite pasajero, es "esta cuenta no tiene cuota".
+            raise _PermanentError("429 con cuota 0 (plan no activado)")
         if r.status_code == 429:
             try:
                 wait = float(r.headers.get("retry-after", "30"))
@@ -189,10 +226,16 @@ class VictorBrain:
             raise ValueError("respuesta sin content (probable corte en razonamiento)")
         return content
 
-    def complete(self, system: str, messages: list, max_tokens: int = 110, timeout: float = 10.0) -> str:
-        """Intenta cada backend disponible en orden. Devuelve "" si todos fallan."""
+    def complete(self, system: str, messages: list, max_tokens: int = 110, timeout: float = 10.0,
+                 allow_local: bool = True) -> str:
+        """Intenta cada backend disponible en orden. Devuelve "" si todos fallan.
+
+        allow_local=False salta el LLM local (CPU): para datos concretos
+        (combustible, gaps…) la respuesta determinista es instantánea y exacta,
+        y gemma4:e2b falló la cuenta de combustible en la prueba real."""
         with self._lock:
-            candidates = [b for b in self.backends if b.available()]
+            candidates = [b for b in self.backends if b.available()
+                          and (allow_local or b.kind != "ollama")]
         for b in candidates:
             t0 = time.monotonic()
             for attempt in (1, 2):
@@ -229,6 +272,44 @@ class VictorBrain:
             else:
                 out[b.name] = f"pausado {int(b.paused_until - time.time())}s: {b.pause_reason}"
         return out
+
+
+# ─── Servidor Ollama local (solo CPU) ────────────────────────────────────────
+
+_ollama_proc = None
+
+
+def ensure_local_llm() -> bool:
+    """Si hay LOCAL_LLM_MODEL y Ollama no responde, lo levanta SIN GPU
+    (CUDA_VISIBLE_DEVICES vacío) y lo apaga al salir. Si ya corría (p.ej. para
+    otro proyecto) lo reutiliza tal cual: num_gpu=0 por petición igual
+    mantiene a Victor fuera de la VRAM."""
+    global _ollama_proc
+    if not cfg.LOCAL_LLM_MODEL:
+        return False
+    try:
+        _session.get(f"{cfg.LOCAL_LLM_URL}/api/version", timeout=1.5).raise_for_status()
+        return True
+    except Exception:
+        pass
+    import atexit, os, shutil, subprocess
+    if not shutil.which("ollama"):
+        print("[Brain:local] ollama no está instalado")
+        return False
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", OLLAMA_HOST=cfg.LOCAL_LLM_URL.split("//")[-1])
+    _ollama_proc = subprocess.Popen(["ollama", "serve"], env=env, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, start_new_session=True)
+    atexit.register(_ollama_proc.terminate)
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            _session.get(f"{cfg.LOCAL_LLM_URL}/api/version", timeout=1).raise_for_status()
+            print(f"[Brain:local] ollama levantado en CPU para {cfg.LOCAL_LLM_MODEL}")
+            return True
+        except Exception:
+            continue
+    print("[Brain:local] ollama no arrancó")
+    return False
 
 
 # ─── STT ──────────────────────────────────────────────────────────────────────

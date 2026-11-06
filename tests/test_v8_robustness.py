@@ -69,7 +69,11 @@ def _brain(**keys):
     with patch.object(vb.cfg, "GROQ_API_KEY", keys.get("groq", "")), \
          patch.object(vb.cfg, "CEREBRAS_API_KEY", keys.get("cerebras", "")), \
          patch.object(vb.cfg, "NVIDIA_API_KEY", keys.get("nvidia", "")), \
-         patch.object(vb.cfg, "GEMINI_API_KEY", keys.get("gemini", "")):
+         patch.object(vb.cfg, "GEMINI_API_KEY", keys.get("gemini", "")), \
+         patch.object(vb.cfg, "MISTRAL_API_KEY", keys.get("mistral", "")), \
+         patch.object(vb.cfg, "OPENROUTER_API_KEY", keys.get("openrouter", "")), \
+         patch.object(vb.cfg, "CUSTOM_LLM_BASE_URL", ""), \
+         patch.object(vb.cfg, "LOCAL_LLM_MODEL", keys.get("local", "")):
         return vb.VictorBrain()
 
 
@@ -305,3 +309,85 @@ def test_failures_after_an_expired_rate_limit_still_trip_breaker():
         for _ in range(3):
             brain.complete("s", [{"role": "user", "content": "x"}])
     assert g.fails == 3 and not g.available()
+
+
+def test_openrouter_heal_never_picks_a_paid_model():
+    brain = _brain(openrouter="k")
+    orb = next(b for b in brain.backends if b.name == "openrouter")
+    body = {"data": [{"id": "openai/gpt-oss-120b"}, {"id": "anthropic/some-paid"}]}
+    with patch.object(vb._session, "get", return_value=_Resp(body=body)):
+        assert brain._heal(orb) is False
+    assert orb.model.endswith(":free")
+
+
+def test_mistral_and_openrouter_are_in_the_chain_after_gemini():
+    names = [b.name for b in _brain().backends]
+    assert names[-2:] == ["mistral", "openrouter"]
+
+
+def test_zero_quota_429_is_permanent_not_transient():
+    brain = _brain(mistral="k")
+    m = next(b for b in brain.backends if b.name == "mistral")
+    resp = _Resp(429, headers={"x-ratelimit-limit-req-minute": "0"})
+    with patch.object(vb._session, "post", return_value=resp):
+        brain.complete("s", [{"role": "user", "content": "x"}])
+    assert m.paused_until - time.time() > 3600
+
+
+def test_openrouter_heal_picks_only_free_models():
+    brain = _brain(openrouter="k")
+    orb = next(b for b in brain.backends if b.name == "openrouter")
+    body = {"data": [{"id": "nvidia/nemotron-3-ultra-550b-a55b"},
+                     {"id": "nvidia/nemotron-3.5-content-safety:free"},
+                     {"id": "google/gemma-4-31b-it:free"}]}
+    orb.model = "dead:free"
+    with patch.object(vb._session, "get", return_value=_Resp(body=body)):
+        assert brain._heal(orb) is True
+    assert orb.model == "google/gemma-4-31b-it:free"
+
+
+def test_tyre_life_wording_is_remaining_life(eng):
+    t = eng.Telemetry(); t.tyre_wear_fl = t.tyre_wear_fr = t.tyre_wear_rl = t.tyre_wear_rr = 96
+    assert "96 por ciento de vida" in eng._local_reply("tyres", t)
+
+
+def test_local_ollama_is_last_and_never_uses_gpu():
+    brain = _brain(groq="k", local="gemma4:e2b")
+    assert brain.backends[-1].name == "local"
+    seen = {}
+
+    def fake_post(url, json, timeout, headers=None):
+        if "groq" in url:
+            return _Resp(500)
+        seen.update(url=url, json=json, timeout=timeout)
+        return _Resp(body={"message": {"content": "Gomas bien."}})
+
+    with patch.object(vb._session, "post", side_effect=fake_post):
+        assert brain.complete("s", [{"role": "user", "content": "x"}]) == "Gomas bien."
+    assert seen["url"].endswith("/api/chat")
+    assert seen["json"]["options"]["num_gpu"] == 0
+    assert seen["timeout"] >= 25
+    assert brain.last_backend == "local"
+
+
+def test_local_llm_skipped_when_allow_local_false():
+    brain = _brain(local="gemma4:e2b")
+    with patch.object(vb._session, "post") as post:
+        assert brain.complete("s", [{"role": "user", "content": "x"}], allow_local=False) == ""
+    post.assert_not_called()
+
+
+def test_fuel_question_does_not_use_local_llm_but_free_question_does(eng, voice):
+    voice("Victor, cuánto combustible me queda")
+    assert voice.llm.call_args.kwargs["allow_local"] is False
+    voice("Victor, cuéntame un chiste de ingenieros")
+    assert voice.llm.call_args.kwargs["allow_local"] is True
+
+
+def test_speakable_strips_markdown(eng):
+    assert eng._speakable("detrás de **Torres** a 2.1s") == "detrás de Torres a 2 coma 1 segundos"
+
+
+def test_system_prompt_forbids_inventing_data(eng):
+    assert "NUNCA INVENTES DATOS" in eng._SYSTEM
+    assert "USA SIEMPRE el nombre del rival" not in eng._SYSTEM

@@ -59,8 +59,13 @@ por si le sirve a alguien más de la comunidad de sim racing en Linux.
   (tolerante a que la transcripción lo escuche mal). Evita que música o
   conversación de fondo dispare respuestas sin que nadie le hable.
 - **Cerebro multi-backend con failover** — Groq → Cerebras → NVIDIA NIM →
-  Gemini (+ un backend propio OpenAI-compatible opcional), con circuit
-  breaker; si un proveedor falla o está caído, sigue con el siguiente.
+  Gemini → Mistral → OpenRouter (solo modelos `:free`) → LLM local en CPU
+  (Ollama, opcional), + un backend propio OpenAI-compatible; circuit breaker
+  y salto automático al siguiente. Todos tienen capa gratuita.
+- **LLM local sin tocar la VRAM** — Ollama con `num_gpu=0` como último
+  recurso, solo para preguntas abiertas, setup, briefing y debrief (los datos
+  concretos van por respuesta determinista: más rápida y exacta). Victor
+  levanta `ollama serve` sin GPU si hace falta y lo apaga al salir.
 - **Autocuración de modelos** — si un proveedor retira el modelo configurado
   (pasó con `llama-3.3-70b-versatile` y `gemini-2.0-flash` en 2026), Victor
   consulta `/models` y cambia solo a uno vivo. Key inválida o sin crédito
@@ -116,9 +121,10 @@ reemplazarlo directamente.
   GE-Proton, appid `244210`).
 - Python 3.10+.
 - `arecord` (paquete `alsa-utils`) para capturar el micrófono.
-- Una API key de al menos uno de estos proveedores (todos tienen capa
+- Opcional: API key de alguno de estos proveedores (todos tienen capa
   gratuita): [Groq](https://console.groq.com/), [Cerebras](https://cloud.cerebras.ai/),
-  [NVIDIA NIM](https://build.nvidia.com/), [Gemini](https://aistudio.google.com/).
+  [NVIDIA NIM](https://build.nvidia.com/), [Gemini](https://aistudio.google.com/),
+  [Mistral](https://console.mistral.ai/), [OpenRouter](https://openrouter.ai/).
   Cuantos más configures, más resiliente es el failover.
 - `mingw-w64-gcc` si querés recompilar `ac_shm_reader.exe` (el binario
   compilado no se versiona — ver más abajo).

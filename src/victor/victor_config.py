@@ -91,6 +91,8 @@ CEREBRAS_API_KEY = get_key("CEREBRAS_API_KEY")
 NVIDIA_API_KEY   = get_key("NVIDIA_API_KEY")
 GEMINI_API_KEY   = get_key("GEMINI_API_KEY") or get_key("GOOGLE_API_KEY")
 DEEPGRAM_API_KEY = get_key("DEEPGRAM_API_KEY")
+MISTRAL_API_KEY  = get_key("MISTRAL_API_KEY")
+OPENROUTER_API_KEY = get_key("OPENROUTER_API_KEY")
 
 # Defaults revisados 2026-11: llama-3.3-70b-versatile (Groq) se apagó el
 # 2026-08-16 y gemini-2.0-flash el 2026-06-01 — Victor llamaba a modelos
@@ -101,6 +103,13 @@ GROQ_MODEL     = get_key("GROQ_MODEL", "openai/gpt-oss-120b")
 CEREBRAS_MODEL = get_key("CEREBRAS_MODEL", "gpt-oss-120b")
 NVIDIA_MODEL   = get_key("NVIDIA_MODEL", "meta/llama-4-maverick-17b-128e-instruct")
 GEMINI_MODEL   = get_key("GEMINI_MODEL", "gemini-flash-latest")
+# Mistral: plan gratuito "Experiment" (con límites por minuto) — small es rápido.
+MISTRAL_MODEL  = get_key("MISTRAL_MODEL", "mistral-small-latest")
+# OpenRouter: SOLO modelos ":free" (gratis, ~20 req/min; 50/día sin crédito
+# comprado, 1000/día con >=10 USD). La autocuración también exige ":free".
+# 2026-11-05: gpt-oss-120b:free ya no existe; gemma-4 :free da 429 upstream
+# casi siempre; nemotron-3-ultra respondió bien en ~2 s.
+OPENROUTER_MODEL = get_key("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
 
 # Backend propio OpenAI-compatible (OpenRouter, llama.cpp server, LM Studio…).
 # Si se define CUSTOM_LLM_BASE_URL va PRIMERO en la cadena (es elección
@@ -108,6 +117,14 @@ GEMINI_MODEL   = get_key("GEMINI_MODEL", "gemini-flash-latest")
 CUSTOM_LLM_BASE_URL = get_key("CUSTOM_LLM_BASE_URL").rstrip("/")
 CUSTOM_LLM_MODEL    = get_key("CUSTOM_LLM_MODEL")
 CUSTOM_LLM_API_KEY  = get_key("CUSTOM_LLM_API_KEY") or ("local" if CUSTOM_LLM_BASE_URL else "")
+
+# LLM local de ÚLTIMO recurso (Ollama, SOLO CPU: num_gpu=0). La VRAM de la
+# 4060 es del juego. Medido en este PC (8 hilos): gemma4:e2b ≈ 1.8 s en
+# caliente / 6 s en frío; gemma4:e4b ≈ 5 s / 13 s (lento para pista).
+# Vacío = desactivado.
+LOCAL_LLM_MODEL   = get_key("LOCAL_LLM_MODEL", "")
+LOCAL_LLM_URL     = get_key("LOCAL_LLM_URL", "http://127.0.0.1:11434").rstrip("/")
+LOCAL_LLM_THREADS = int(get_key("LOCAL_LLM_THREADS", "6") or 6)
 
 # Audio ducking: volumen relativo del juego mientras Victor habla (1.0 = off).
 DUCK_LEVEL = float(get_key("DUCK_LEVEL", "0.35") or 0.35)
@@ -119,6 +136,9 @@ MODEL_PREFERENCES = {
     "cerebras": ["gpt-oss-120b", "qwen-3", "llama"],
     "nvidia":   ["llama-4-maverick", "llama-3.3-70b", "llama"],
     "gemini":   ["flash-latest", "flash-lite", "flash"],
+    "mistral":  ["mistral-small-latest", "mistral-small", "ministral-8b", "mistral-medium"],
+    "openrouter": ["nemotron-3-ultra", "nemotron-3.5-super", "gemma-4-31b", "gemma-4-26b",
+                   "gpt-oss", "llama", "qwen", ":free"],
 }
 
 # STT: whisper-large-v3-turbo es ~2x más rápido que large-v3 en Groq con

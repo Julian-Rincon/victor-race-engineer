@@ -14,7 +14,11 @@ def _make_brain(**keys):
     with patch.object(vb.cfg, "GROQ_API_KEY", keys.get("groq", "")), \
          patch.object(vb.cfg, "CEREBRAS_API_KEY", keys.get("cerebras", "")), \
          patch.object(vb.cfg, "NVIDIA_API_KEY", keys.get("nvidia", "")), \
-         patch.object(vb.cfg, "GEMINI_API_KEY", keys.get("gemini", "")):
+         patch.object(vb.cfg, "GEMINI_API_KEY", keys.get("gemini", "")), \
+         patch.object(vb.cfg, "MISTRAL_API_KEY", keys.get("mistral", "")), \
+         patch.object(vb.cfg, "OPENROUTER_API_KEY", keys.get("openrouter", "")), \
+         patch.object(vb.cfg, "CUSTOM_LLM_BASE_URL", ""), \
+         patch.object(vb.cfg, "LOCAL_LLM_MODEL", ""):
         return vb.VictorBrain()
 
 

@@ -41,7 +41,7 @@ import victor_config as cfg  # noqa: E402
 # (frase, comprobación sobre la respuesta hablada)
 CASES = [
     ("Victor, cuánto combustible me queda", lambda r: "litro" in r.lower() or "vuelta" in r.lower()),
-    ("Victor, cómo están los neumáticos", lambda r: any(w in r.lower() for w in ("grado", "neum", "goma", "desgaste", "temperatura"))),
+    ("Victor, cómo están los neumáticos", lambda r: any(w in r.lower() for w in ("grado", "°c", "neum", "goma", "desgaste", "temperatura", "vida"))),
     ("Victor, a cuánto está el de adelante", lambda r: len(r) > 5),
     ("Victor, en qué posición voy", lambda r: any(w in r.lower() for w in ("cuarto", "4", "posición", "puesto", "lugar"))),
     ("Victor, tengo daños", lambda r: len(r) > 5),
@@ -82,6 +82,8 @@ def check_brain(skip: bool):
     section("2. Cerebro (LLM)")
     import victor_brain as vb
     brain = vb.VictorBrain()
+    if cfg.LOCAL_LLM_MODEL and not skip:
+        vb.ensure_local_llm()
     if skip:
         warn("omitido (--no-llm)")
         return brain
@@ -97,7 +99,7 @@ def check_brain(skip: bool):
         t0 = time.monotonic()
         try:
             r = brain.complete("Eres un ingeniero de carreras. Responde en español, 5 palabras máximo.",
-                               [{"role": "user", "content": "Di: radio check"}], max_tokens=20, timeout=12)
+                               [{"role": "user", "content": "Di: radio check"}], max_tokens=40, timeout=20)
         finally:
             for x, k in saved:
                 x.api_key = k
@@ -105,6 +107,8 @@ def check_brain(skip: bool):
         if r:
             any_ok = True
             ok(f"{b.name}/{b.model}: {dt:.2f}s → {r[:50]!r}")
+        elif "cuota 0" in brain.status()[b.name]:
+            warn(f"{b.name}: la cuenta no tiene cuota — activa el plan gratis en su consola")
         else:
             fail(f"{b.name}: sin respuesta ({brain.status()[b.name]})")
     if not any_ok:
