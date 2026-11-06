@@ -161,11 +161,17 @@ def test_priority_two_message_is_deferred_in_braking_zone(victor, spoken):
     assert spoken == []
 
 
-def test_priority_one_message_passes_through_braking_zone(victor, spoken):
+def test_in_corner_only_spotter_speaks_critical_waits(victor, spoken):
+    # Regla del piloto (2026-11-06): en curva SOLO el spotter; lo crítico
+    # espera a la recta.
     victor._current.spline = 0.02
     victor._current.speed = 220.0
+    victor._say("Coche a la izquierda", priority=0)
     victor._say("Test mensaje crítico", priority=1)
-    assert len(spoken) == 1
+    assert [t for _, t in spoken] == ["Coche a la izquierda"]
+    with victor._deferred_lock:
+        assert any(t == "Test mensaje crítico" for _, t, _ in victor._deferred_msgs)
+        victor._deferred_msgs.clear()
 
 
 def test_deferred_messages_drain_on_leaving_braking_zone(victor, spoken):
@@ -241,7 +247,7 @@ def test_system_prompt_mentions_controller_coaching(eng, needle):
 # ─── 7. Crash template rotation ──────────────────────────────────────────────
 
 def test_crash_templates_rotate(victor, spoken):
-    victor._current.spline = 0.50  # fuera de braking zone
+    victor._current.spline = 0.30  # fuera de braking zone (0.47-0.54 es zona en Spa)
     first_words = []
     for i in range(4):
         victor._alert_times.pop("crash_reaction", None)

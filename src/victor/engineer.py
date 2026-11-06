@@ -41,6 +41,7 @@ from piper.voice import PiperVoice
 
 import victor_brain
 import victor_config as cfg
+import victor_corner
 import victor_duck
 import victor_ears
 import victor_memory
@@ -68,6 +69,7 @@ TELEM_SLOW   = TELEM_SLOW_SHM
 # consume ~5GB de VRAM que ya casi se agota con el juego + stack gráfico (ver
 # incidente de freeze del 2026-07-03 en la memoria de NEXUS).
 _brain = victor_brain.VictorBrain()
+_corner = victor_corner.CornerDetector()
 _ducker = victor_duck.Ducker(level=cfg.DUCK_LEVEL, **({"apps": cfg.DUCK_APPS} if cfg.DUCK_APPS else {}))
 GROQ_API_KEY = cfg.GROQ_API_KEY  # usado solo para el chequeo de warning en main()
 
@@ -973,7 +975,7 @@ _gap_snaps_lock   = threading.Lock()
 # seguido mientras se recupera) podía ser mucho después del evento que lo
 # disparó, y llegaba desconectado de contexto (reportado en vivo: "nunca
 # escuché que dijera eso").
-_DEFERRED_STALE_S = 10.0
+_DEFERRED_STALE_S = 15.0
 _deferred_msgs:   list[tuple[int, str, float]] = []   # (priority, text, queued_at)
 _deferred_lock    = threading.Lock()
 
@@ -1321,6 +1323,11 @@ def _speak_espeak(text: str):
         print(f"[TTS espeak] {e}")
 
 
+def _split_sentences(text: str) -> list[str]:
+    parts = [p.strip() for p in _re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+    return parts or [text]
+
+
 def _tts_worker():
     global _tts_finished_at, _last_message
     while True:
@@ -1330,13 +1337,24 @@ def _tts_worker():
         if _muted and pri >= 2:   # muted: only spotter(0) and critical(1) pass
             _tts_pq.task_done()
             continue
+        if pri >= 1 and _in_corner():
+            # Se encoló en recta pero ya entramos en curva: esperar.
+            _defer(pri, text)
+            _tts_pq.task_done()
+            continue
         _tts_busy.set()
         _last_message = text
         try:
             print(f"\n[Victor P{pri}] {text}")
             _ducker.duck()          # baja SOLO el juego mientras Victor habla
-            if not _speak_piper(text):
-                _speak_espeak(text)
+            sentences = _split_sentences(text) if pri >= 1 else [text]
+            for i, sentence in enumerate(sentences):
+                if i > 0 and _in_corner():
+                    # Mensaje largo (briefing, debrief): el resto sigue en la recta.
+                    _defer(pri, " ".join(sentences[i:]))
+                    break
+                if not _speak_piper(sentence):
+                    _speak_espeak(sentence)
         finally:
             # Restaurar ya si no hay más mensajes en cola; si hay, se mantiene
             # agachado y no "bombea" el volumen entre frases seguidas.
@@ -1367,6 +1385,17 @@ def _in_braking_zone() -> bool:
     return False
 
 
+def _in_corner() -> bool:
+    """Regla del piloto: en curva solo habla el spotter. Zonas de frenada
+    mapeadas O curva detectada por telemetría (cualquier pista)."""
+    return _in_braking_zone() or _corner.in_corner()
+
+
+def _defer(priority: int, text: str) -> None:
+    with _deferred_lock:
+        _deferred_msgs.append((priority, text, time.time()))
+
+
 def _parse_tyre_range(car_id: str) -> tuple[float, float]:
     """Return (optimal_lo, optimal_hi) in °C for the current car type."""
     car_type = _classify_car(car_id) if (car_id and _car_db) else "street"
@@ -1380,12 +1409,12 @@ def _parse_tyre_range(car_id: str) -> tuple[float, float]:
 
 def _say(text: str, priority: int = 2):
     """Priority 0=spotter, 1=critical, 2=normal.
-    Non-critical messages (priority≥2) are deferred if car is in a braking zone."""
+    Regla del piloto: en curva SOLO habla el spotter (0); todo lo demás,
+    incluidas las críticas, espera a la recta (se dice al salir)."""
     if not text or not text.strip():
         return
-    if priority >= 2 and _in_braking_zone():
-        with _deferred_lock:
-            _deferred_msgs.append((priority, text.strip(), time.time()))
+    if priority >= 1 and _in_corner():
+        _defer(priority, text.strip())
         return
     _tts_pq.put((priority, text.strip()))
 
@@ -1756,6 +1785,7 @@ def _file_worker():
                             )
                             cur = _current
                             cur_lap = cur.lap
+                        _corner.update(cur.wx, cur.wz, cur.speed, cur.brake)
 
                         # ── Splits reales desde transiciones de sector (SHM) ───
                         if "sector_index" in p and _is_live(cur):
@@ -2676,7 +2706,7 @@ def main():
 
     _load_piper()
     threading.Thread(target=_tts_worker,    daemon=True, name="tts").start()
-    _say("Victor activo.", priority=0)
+    _say("Victor activo.", priority=1)
     threading.Thread(target=_file_worker,  daemon=True, name="telem").start()
     threading.Thread(target=_audio_worker, daemon=True, name="audio").start()
 
@@ -2699,8 +2729,11 @@ def main():
                 t        = replace(_current)
 
             # Session briefing — fires at start of any timed session (solo en pista)
+            # speed < 50: si Victor arranca con el coche ya en pista (reinicio a
+            # mitad de carrera) no repite el briefing de 20 s.
             if (_is_timed_session(t.session) and t.track and t.fuel > 0
                     and not _pre_race_done and _connected and _is_live(t)
+                    and t.speed < 50
                     and _can_alert("session_brief")):
                 _pre_race_done = True
                 threading.Thread(target=_session_briefing, args=(t,), daemon=True).start()
@@ -2738,7 +2771,7 @@ def main():
             # Drain deferred messages when clear of braking zone — descarta
             # las que ya vencieron (ver _DEFERRED_STALE_S) en vez de hablar
             # algo desconectado del momento que lo disparó.
-            if not _in_braking_zone():
+            if not _in_corner():
                 with _deferred_lock:
                     if _deferred_msgs:
                         msgs = _deferred_msgs.copy()
