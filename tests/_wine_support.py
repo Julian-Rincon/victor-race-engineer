@@ -28,12 +28,26 @@ def wine_available() -> bool:
 
 
 def ac_is_running() -> bool:
-    return subprocess.run(
-        # -x sobre el nombre del proceso (comm, máx 15 chars), NO -f: con -f
-        # cualquier shell cuya línea de comandos mencionara "acs.exe" (un grep,
-        # un heredoc) hacía creer que AC corría y se saltaban 57 tests.
-        ["pgrep", "-x", "acs.exe|acs_x86.exe|AssettoCorsa.*"], capture_output=True
-    ).returncode == 0
+    """True si Assetto Corsa corre. Mira argv[0] de cada proceso en /proc.
+
+    Ni `pgrep -f` (cualquier shell que mencione "acs.exe" daba positivo y se
+    saltaban 57 tests) ni `pgrep -x` sobre comm (bajo Proton AC se llama
+    "AC: main thread" -> nunca detectaba AC, y la suite lanzó
+    shm_simulator.exe ENCIMA de una carrera real el 2026-11-06,
+    sobrescribiendo la página estática de AC: pista/coche/longitud falsos).
+    """
+    import os
+    targets = ("acs.exe", "acs_x86.exe", "acs_pro.exe", "assettocorsa.exe")
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv0 = f.read().split(b"\0", 1)[0].decode(errors="ignore")
+        except OSError:
+            continue
+        name = argv0.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name in targets:
+            return True
+    return False
 
 
 requires_wine = pytest.mark.skipif(

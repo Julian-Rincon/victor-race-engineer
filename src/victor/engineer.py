@@ -772,7 +772,7 @@ def _get_setup_context(car_id: str, track_id: str, track_layout: str,
         f"  {track_notes}\n\n"
         f"SESIÓN:\n"
         f"  Combustible cargado: {fuel_loaded:.1f}L | Compuesto: {tyre_compound or 'no especificado'}\n"
-        f"  Tiempo disponible: {int(time_left/60) if time_left else '?'} min\n"
+        f"  {f'Tiempo disponible: {int(time_left/60)} min' if time_left > 0 else 'Carrera por vueltas (sin límite de tiempo)'}\n"
         f"  {fuel_calc}"
     )
     return ctx, car_type, car_prof["label"]
@@ -1527,10 +1527,20 @@ def _run_spotter(t: Telemetry):
 
 # ─── File-based telemetry receiver ───────────────────────────────────────────────
 
+_NONFINITE_RE = _re.compile(r'(?<=:)\s*(-?inf(?:inity)?|nan)\b', _re.IGNORECASE)
+
+
 def _read_json_file(path: str) -> Optional[dict]:
+    """Lee un JSON de telemetría. Tolera inf/nan crudos (printf de C): en
+    carreras por vueltas el lector viejo escribía "time_left":inf y el JSON
+    entero se descartaba — Victor perdía pista, coche y sesión."""
     try:
         with open(path, "r") as f:
-            return json.loads(f.read())
+            raw = f.read()
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return json.loads(_NONFINITE_RE.sub("-1", raw))
     except Exception:
         return None
 

@@ -336,7 +336,10 @@ static void write_slow(void) {
     jb("\"track_layout\":"); jws(sta->trackConfiguration); jb(",");
     jb("\"car\":"); jws(sta->carModel); jb(",");
     jf("\"session\":%d,",    grx->session);
-    jf("\"time_left\":%.0f,", grx->sessionTimeLeft);
+    /* Carreras por vueltas: AC pone sessionTimeLeft = inf y printf escribía
+       "inf" — JSON inválido, Victor perdía pista/coche/sesión. -1 = sin
+       límite de tiempo. */
+    jf("\"time_left\":%.0f,", isfinite(grx->sessionTimeLeft) ? grx->sessionTimeLeft : -1.0f);
     /* all_drivers: nombre/coche por posición (incluye al jugador, idx 0) */
     jb("\"all_drivers\":{");
     if (cc) {
