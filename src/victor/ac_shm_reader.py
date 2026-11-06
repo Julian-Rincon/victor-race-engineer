@@ -372,8 +372,8 @@ def _build_fast(phy: SPageFilePhysics, grx: SPageFileGraphic, cc: SPageFileCrewC
         "track_len":    0,
         "wx":   round(grx.carCoordinates[0], 2),
         "wz":   round(grx.carCoordinates[2], 2),
-        "vx":   round(phy.localVelocity.x, 2),
-        "vz":   round(phy.localVelocity.z, 2),
+        "vx":   round(phy.velocity[0], 2),   # marco mundial, como wx/wz
+        "vz":   round(phy.velocity[2], 2),
         "dmg_front":  round(phy.carDamage[0], 1),
         "dmg_rear":   round(phy.carDamage[1], 1),
         "dmg_left":   round(phy.carDamage[2], 1),

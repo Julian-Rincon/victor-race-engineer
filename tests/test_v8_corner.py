@@ -77,3 +77,76 @@ def test_teleport_resets_heading():
 
 def test_tts_worker_splits_long_messages(eng):
     assert eng._split_sentences("Uno. Dos! Tres?") == ["Uno.", "Dos!", "Tres?"]
+
+
+# ─── Mapa de curvas (mirar adelante) ────────────────────────────────────────
+
+import struct
+
+
+def _write_ai(path, pts):
+    """fast_lane.ai mínimo: cabecera + (x, y, z, dist, id) por punto."""
+    b = bytearray(struct.pack("<4i", 7, len(pts), 0, 0))
+    d = 0.0
+    prev = None
+    for i, (x, z) in enumerate(pts):
+        if prev:
+            d += math.hypot(x - prev[0], z - prev[1])
+        b += struct.pack("<4fi", x, 0.0, z, d, i)
+        prev = (x, z)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(b))
+
+
+def _stadium(straight=1000.0, radius=50.0, step=2.0):
+    """Óvalo: recta 1000 m, curva de 50 m de radio, recta, curva."""
+    pts = []
+    n = int(straight / step)
+    pts += [(i * step, 0.0) for i in range(n)]
+    m = int(math.pi * radius / step)
+    pts += [(straight + radius * math.sin(k * step / radius), radius - radius * math.cos(k * step / radius)) for k in range(m)]
+    pts += [(straight - i * step, 2 * radius) for i in range(n)]
+    pts += [(-radius * math.sin(k * step / radius), radius + radius * math.cos(k * step / radius)) for k in range(m)]
+    return pts
+
+
+def test_corner_map_from_ai_line(tmp_path):
+    _write_ai(tmp_path / "content/tracks/oval/ai/fast_lane.ai", _stadium())
+    m = vc.CornerMap(buckets=1000)
+    m.reset(("oval", ""), tmp_path)
+    assert m.source == "línea IA"
+    L = m.track_len
+    s_mid_straight = 500 / L
+    s_curve = (1000 + 80) / L
+    assert not m.is_corner(s_mid_straight)
+    assert m.is_corner(s_curve)
+    # a mitad de recta quedan ~500 m menos la frenada previa
+    ahead = m.clear_ahead_m(s_mid_straight, L)
+    assert 300 < ahead < 520
+    # pegado a la curva: la zona de frenada ya cuenta
+    assert m.clear_ahead_m((1000 - 60) / L, L) == 0.0
+
+
+def test_corner_map_layout_dir_preferred(tmp_path):
+    _write_ai(tmp_path / "content/tracks/t/gp/ai/fast_lane.ai", _stadium())
+    m = vc.CornerMap(buckets=500)
+    m.reset(("t", "gp"), tmp_path)
+    assert m.source == "línea IA"
+    m.reset(("nope", ""), tmp_path)
+    assert m.source == "aprendido" and m.clear_ahead_m(0.5, 4000) == math.inf
+
+
+def test_corner_map_learns_only_after_two_laps():
+    m = vc.CornerMap(buckets=100)
+    m.reset(("x", ""), None)
+    m.learn(0.505, lap=1, in_corner=True)
+    m.learn(0.505, lap=1, in_corner=True)      # misma vuelta no cuenta doble
+    assert not m.is_corner(0.505)             # un trompo no marca la recta
+    m.learn(0.505, lap=2, in_corner=True)
+    assert m.is_corner(0.505)
+    assert m.clear_ahead_m(0.40, 1000) == 100.0
+
+
+def test_speech_seconds_is_capped():
+    assert vc.speech_seconds("Hola.") < 1.0
+    assert vc.speech_seconds("x" * 1000) == vc.SPEECH_CAP_S

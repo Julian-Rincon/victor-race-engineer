@@ -59,7 +59,7 @@ def spotter(eng, clock, spoken):
                 "idx": 1, "race_pos": 2, "lap": lap,
                 "spline": t.spline + long_m / t.track_len,
                 "speed": 150.0,
-                "wx": lat_m, "wz": long_m,
+                "wx": -lat_m, "wz": long_m,   # avance +Z => derecha = -X en AC
                 "driver_name": "Ayrton Senna", "in_pit": False,
             }]
             return t
@@ -129,8 +129,19 @@ def test_three_wide_announces_both_sides(spotter):
     t3.cars_data.append({
         "idx": 2, "race_pos": 4, "lap": 5,
         "spline": t3.spline, "speed": 150.0,
-        "wx": -2.2, "wz": -0.5,
+        "wx": 2.2, "wz": -0.5,       # +X = izquierda con avance +Z
         "driver_name": "Alain Prost", "in_pit": False,
     })
     spotter.feed(t3, times=4)
     assert any("ambos" in s.lower() for s in spotter.texts()), spotter.texts()
+
+
+def test_side_matches_real_track_view_regression():
+    """Regresión carrera Spa 2026-11-06: coche a la IZQUIERDA cantado como
+    derecha. En AC la vista cenital es X a la derecha, Z hacia abajo: yendo
+    hacia el "norte" del mapa (-Z), un coche al este (+X) va a la DERECHA."""
+    import engineer as eng
+    assert eng._side_of(0, 0, 0, -50, 3, 0) == "right"
+    assert eng._side_of(0, 0, 0, -50, -3, 0) == "left"
+    # rumbo este (+X): la derecha es "sur" del mapa = +Z
+    assert eng._side_of(0, 0, 50, 0, 0, 3) == "right"

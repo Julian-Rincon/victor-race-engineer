@@ -170,7 +170,7 @@ def test_in_corner_only_spotter_speaks_critical_waits(victor, spoken):
     victor._say("Test mensaje crítico", priority=1)
     assert [t for _, t in spoken] == ["Coche a la izquierda"]
     with victor._deferred_lock:
-        assert any(t == "Test mensaje crítico" for _, t, _ in victor._deferred_msgs)
+        assert any(t == "Test mensaje crítico" for _, t, *_ in victor._deferred_msgs)
         victor._deferred_msgs.clear()
 
 
@@ -221,7 +221,7 @@ def test_projection_fires_at_half_distance(victor, spoken):
     victor._current.best_lap_ms = 90000.0
     victor._current.session = 2
     victor._project_lap_time()
-    assert any("proyectada" in t.lower() for t in _texts(spoken)), _texts(spoken)
+    assert any("por detrás de tu mejor" in t.lower() for t in _texts(spoken)), _texts(spoken)
 
 
 def test_projection_detects_personal_best(victor, spoken):
@@ -230,7 +230,7 @@ def test_projection_detects_personal_best(victor, spoken):
     victor._current.best_lap_ms = 90000.0
     victor._current.session = 2
     victor._project_lap_time()
-    assert any("récord" in t.lower() for t in _texts(spoken)), _texts(spoken)
+    assert any("más rápido que tu mejor" in t.lower() for t in _texts(spoken)), _texts(spoken)
 
 
 # ─── 6. Controller mode en el system prompt ──────────────────────────────────

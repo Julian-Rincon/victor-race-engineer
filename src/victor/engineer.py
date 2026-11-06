@@ -70,6 +70,8 @@ TELEM_SLOW   = TELEM_SLOW_SHM
 # incidente de freeze del 2026-07-03 en la memoria de NEXUS).
 _brain = victor_brain.VictorBrain()
 _corner = victor_corner.CornerDetector()
+_corner_map = victor_corner.CornerMap()
+_AC_ROOT = _AC_BRIDGE_DIR.parents[2]          # .../steamapps/common/assettocorsa
 _ducker = victor_duck.Ducker(level=cfg.DUCK_LEVEL, **({"apps": cfg.DUCK_APPS} if cfg.DUCK_APPS else {}))
 GROQ_API_KEY = cfg.GROQ_API_KEY  # usado solo para el chequeo de warning en main()
 
@@ -143,7 +145,7 @@ COOLDOWN: dict[str, float] = {
     "pit_window":   60.0, "session_brief": 999.0,
     "coaching":     60.0, "crash_reaction": 8.0,
     "dirty_move":   15.0, "midlap_proj":   35.0,
-    "brake_lockup": 15.0,
+    "brake_lockup": 15.0, "off_track":     45.0,
 }
 
 # ─── Mini-sector coaching ────────────────────────────────────────────────────────
@@ -939,6 +941,7 @@ _car_db: dict[str, dict] = {} # built at startup from AC's ui_car.json files
 # Crash & dirty move detection
 _prev_dmg_max     = 0.0        # max damage value from last frame
 _prev_position    = -1         # race position last frame (to detect sudden pos loss)
+_pace_drop_lap    = -1         # última vuelta evaluada para "vuelta más lenta"
 _was_off_track    = False      # flanco: solo avisar al SALIR de pista, no mientras sigue afuera
 _on_track_since   = 0.0        # timestamp: cuándo volvió a pista (histéresis anti-flicker)
 _OFF_TRACK_REARM_S = 0.5       # tiempo continuo en pista antes de poder re-disparar
@@ -975,8 +978,8 @@ _gap_snaps_lock   = threading.Lock()
 # seguido mientras se recupera) podía ser mucho después del evento que lo
 # disparó, y llegaba desconectado de contexto (reportado en vivo: "nunca
 # escuché que dijera eso").
-_DEFERRED_STALE_S = 15.0
-_deferred_msgs:   list[tuple[int, str, float]] = []   # (priority, text, queued_at)
+_DEFERRED_STALE_S = 25.0
+_deferred_msgs:   list[tuple[int, str, float, float]] = []   # (priority, text, queued_at, ttl)
 _deferred_lock    = threading.Lock()
 
 # Crash reaction templates — rotate to avoid repetition
@@ -1337,7 +1340,7 @@ def _tts_worker():
         if _muted and pri >= 2:   # muted: only spotter(0) and critical(1) pass
             _tts_pq.task_done()
             continue
-        if pri >= 1 and _in_corner():
+        if pri >= 1 and not _can_talk(text):
             # Se encoló en recta pero ya entramos en curva: esperar.
             _defer(pri, text)
             _tts_pq.task_done()
@@ -1345,14 +1348,14 @@ def _tts_worker():
         _tts_busy.set()
         _last_message = text
         try:
-            print(f"\n[Victor P{pri}] {text}")
             _ducker.duck()          # baja SOLO el juego mientras Victor habla
             sentences = _split_sentences(text) if pri >= 1 else [text]
             for i, sentence in enumerate(sentences):
-                if i > 0 and _in_corner():
+                if i > 0 and not _can_talk(sentence):
                     # Mensaje largo (briefing, debrief): el resto sigue en la recta.
                     _defer(pri, " ".join(sentences[i:]))
                     break
+                print(f"\n[Victor P{pri}] {sentence}")
                 if not _speak_piper(sentence):
                     _speak_espeak(sentence)
         finally:
@@ -1387,13 +1390,36 @@ def _in_braking_zone() -> bool:
 
 def _in_corner() -> bool:
     """Regla del piloto: en curva solo habla el spotter. Zonas de frenada
-    mapeadas O curva detectada por telemetría (cualquier pista)."""
-    return _in_braking_zone() or _corner.in_corner()
+    mapeadas, curva detectada por telemetría o tramo de curva del mapa."""
+    if _in_braking_zone() or _corner.in_corner():
+        return True
+    with _lock:
+        spline, speed = _current.spline, _current.speed
+    return speed >= victor_corner.MIN_SPEED and _corner_map.is_corner(spline)
 
 
-def _defer(priority: int, text: str) -> None:
+def _can_talk(text: str) -> bool:
+    """¿Puede empezar ESTA frase ya? En recta Y con recta suficiente por
+    delante para terminarla antes de la próxima curva."""
+    if _in_corner():
+        return False
+    with _lock:
+        spline, speed, tlen = _current.spline, _current.speed, _current.track_len
+    if speed < victor_corner.MIN_SPEED:
+        return True                       # boxes/parrilla: sin restricción
+    first = _split_sentences(text)[0] if text else ""
+    need_m = speed / 3.6 * victor_corner.speech_seconds(first)
+    return _corner_map.clear_ahead_m(spline, tlen) >= need_m
+
+
+def _defer(priority: int, text: str, ttl: Optional[float] = None) -> None:
+    """Guarda el mensaje para la próxima recta. Sin duplicados: el mismo
+    texto ya en espera no se encola otra vez (en Spa se repetía 7 veces)."""
     with _deferred_lock:
-        _deferred_msgs.append((priority, text, time.time()))
+        if any(m[1] == text for m in _deferred_msgs):
+            return
+        _deferred_msgs.append((priority, text, time.time(),
+                               _DEFERRED_STALE_S if ttl is None else ttl))
 
 
 def _parse_tyre_range(car_id: str) -> tuple[float, float]:
@@ -1407,16 +1433,17 @@ def _parse_tyre_range(car_id: str) -> tuple[float, float]:
         return 70.0, 95.0
 
 
-def _say(text: str, priority: int = 2):
+def _say(text: str, priority: int = 2, ttl: Optional[float] = None):
     """Priority 0=spotter, 1=critical, 2=normal.
     Regla del piloto: en curva SOLO habla el spotter (0); todo lo demás,
     incluidas las críticas, espera a la recta (se dice al salir)."""
     if not text or not text.strip():
         return
-    if priority >= 1 and _in_corner():
-        _defer(priority, text.strip())
+    text = text.strip()
+    if priority >= 1 and not _can_talk(text):
+        _defer(priority, text, ttl)
         return
-    _tts_pq.put((priority, text.strip()))
+    _tts_pq.put((priority, text))
 
 # ─── SPOTTER ─────────────────────────────────────────────────────────────────────
 
@@ -1426,9 +1453,20 @@ def _side_of(our_x: float, our_z: float, our_vx: float, our_vz: float,
     if spd < 0.5:
         return "right"
     fwd_x, fwd_z  = our_vx / spd, our_vz / spd
-    right_x, right_z = fwd_z, -fwd_x   # 90° clockwise rotation in XZ plane
+    right_x, right_z = _right_of(fwd_x, fwd_z)
     dx, dz = other_x - our_x, other_z - our_z
     return "right" if (dx * right_x + dz * right_z) > 0 else "left"
+
+
+def _right_of(fwd_x: float, fwd_z: float) -> tuple[float, float]:
+    """Vector 'a mi derecha' en el plano XZ del MUNDO de Assetto Corsa.
+
+    Vista cenital real de AC = X a la derecha y Z hacia ABAJO (verificado con
+    la línea de IA de Spa: en (x, z) su área sale positiva/antihoraria, y Spa
+    se corre en sentido horario). Con Z hacia abajo, girar el avance 90° en
+    horario da (-fz, fx). La fórmula anterior (fz, -fx) cantaba el lado al revés.
+    """
+    return -fwd_z, fwd_x
 
 
 def _reset_spotter():
@@ -1480,18 +1518,16 @@ def _run_spotter(t: Telemetry):
                 continue
             fwd_x, fwd_z = our_vx / spd_v, our_vz / spd_v
             lon = dx * fwd_x + dz * fwd_z            # + = delante
-            lat = dx * fwd_z - dz * fwd_x            # + = derecha
+            r_x, r_z = _right_of(fwd_x, fwd_z)
+            lat = dx * r_x + dz * r_z                # + = derecha
             if not (-(SPOTTER_CAR_LEN_M + SPOTTER_BEHIND_EXTRA_M) < lon < SPOTTER_CAR_LEN_M):
                 continue
             if abs(lat) > SPOTTER_LAT_MAX_M:
                 continue
             if lat > 0: detect_right = True
             else:       detect_left  = True
-        else:
-            # Fallback sin coordenadas: overlap por distancia real en el spline
-            if abs(diff) * t.track_len < SPOTTER_CAR_LEN_M + 1.0:
-                if diff > 0: detect_left  = True
-                else:        detect_right = True
+        # Sin coordenadas/rumbo NO se adivina el lado: el spline solo dice
+        # delante/detrás, y cantar "izquierda" al azar es peor que callar.
 
     # ── State machine con debounce — sin LLM, latencia mínima ────────────
     s = _spotter
@@ -1612,11 +1648,20 @@ def _reset_zone_state():
 def _file_worker():
     global _connected, _current, _race_started, _audio_check_done, _pre_race_done, _last_session, \
            _zone_current, _zone_entry_t, _was_off_track, _on_track_since, _prev_dmg_max, _prev_position, \
-           _session_off_track_count, _session_lockup_count, _session_crash_count
+           _session_off_track_count, _session_lockup_count, _session_crash_count, _pace_drop_lap
 
     # Auto-detect source: SHM reader (/tmp/) preferred, bridge (ACEngineer dir) as fallback
+    shm_seen = [0.0]
+
     def _pick_source():
+        # El lector bajo wine reemplaza el JSON con unlink+rename: hay un
+        # instante sin archivo. Antes eso cambiaba a Bridge, de vuelta a SHM,
+        # y cada salto disparaba "Nueva sesión" + otro briefing. Se mantiene
+        # SHM mientras haya existido hace menos de 10 s.
         if os.path.exists(TELEM_FAST_SHM):
+            shm_seen[0] = time.time()
+            return TELEM_FAST_SHM, TELEM_SLOW_SHM, "SHM"
+        if time.time() - shm_seen[0] < 10.0:
             return TELEM_FAST_SHM, TELEM_SLOW_SHM, "SHM"
         if os.path.exists(TELEM_FAST_BRIDGE):
             return TELEM_FAST_BRIDGE, TELEM_SLOW_BRIDGE, "Bridge"
@@ -1709,6 +1754,9 @@ def _file_worker():
                             _race_finished    = False
                             _lap_history.clear()
                             _reset_zone_state()
+                            _pace_drop_lap = -1
+                            with _deferred_lock:      # nada de la sesión anterior
+                                _deferred_msgs.clear()
                             with _alert_times_lock:
                                 _alert_times.clear()
                             # Sin esto, un flag de excursión/daño/posición de la
@@ -1786,6 +1834,12 @@ def _file_worker():
                             cur = _current
                             cur_lap = cur.lap
                         _corner.update(cur.wx, cur.wz, cur.speed, cur.brake)
+                        _key = (cur.track, cur.track_layout)
+                        if cur.track and _corner_map.key != _key:
+                            _corner_map.reset(_key, _AC_ROOT)
+                            print(f"[Curvas] Mapa de {cur.track}: {_corner_map.source}")
+                        if not cur.in_pitlane:
+                            _corner_map.learn(cur.spline, cur.lap, _corner.raw)
 
                         # ── Splits reales desde transiciones de sector (SHM) ───
                         if "sector_index" in p and _is_live(cur):
@@ -1918,7 +1972,11 @@ def _check_fast_alerts(t: Telemetry, src_name: str):
     now = time.time()
     if is_off_now:
         if not _was_off_track:
-            _say("¡Fuera de pista, Julián! Cuidado al reincorporarte.", priority=1)
+            # Una sola frase (sin resto que se repita después), con cooldown
+            # propio para pianos de Spa, y caduca rápido: dicho 20 s tarde ya
+            # no sirve de nada.
+            if _can_alert("off_track"):
+                _say("Fuera de pista, vuelve con cuidado.", priority=1, ttl=8)
             _was_off_track = True
             _session_off_track_count += 1
         _on_track_since = 0.0
@@ -2010,10 +2068,15 @@ def _check_proactive_alerts():
     _prev_position = t.position
 
     # ── Rival pace drop — rule-based ────────────────────────────────────────────
-    if len(laps) >= 2:
+    # UNA vez por vuelta: antes comparaba el mismo par de vueltas cada 30 s
+    # y en Spa lo repitió 7 veces en la misma vuelta.
+    global _pace_drop_lap
+    if len(laps) >= 2 and laps[-1].lap != _pace_drop_lap:
+        _pace_drop_lap = laps[-1].lap
         delta = laps[-1].time_ms - laps[-2].time_ms
         if delta > RIVAL_CLOSE_LAP * 1000 and _can_alert("rival_close"):
-            _say(f"Bajaste {delta/1000:.1f}s esta vuelta respecto a la anterior. Rival cerrando — revisa el ritmo.")
+            _say(f"Esa vuelta fue {delta/1000:.1f} segundos más lenta que la anterior. Recupera el ritmo.",
+                 ttl=40)
 
     # ── Pit window — rule-based ─────────────────────────────────────────────────
     _check_pit_window(t, laps)
@@ -2056,12 +2119,11 @@ def _project_lap_time():
         return
     if not _can_alert("midlap_proj"):
         return
+    # Corto y que caduque: una proyección dicha 20 s después ya es otra vuelta.
     if delta < -0.1:
-        _say(f"Vuelta proyectada {projected:.3f}s — vas camino de récord personal.")
-    elif delta < 0.3:
-        _say(f"Vuelta proyectada {projected:.3f}s, {delta:+.2f}s vs tu mejor. Buen ritmo.")
-    else:
-        _say(f"Vuelta proyectada {projected:.3f}s, {delta:+.2f}s vs tu mejor. Hay margen aquí.")
+        _say(f"Vas {abs(delta):.1f} más rápido que tu mejor vuelta.", ttl=12)
+    elif delta > 0.3:
+        _say(f"Vas {delta:.1f} por detrás de tu mejor vuelta.", ttl=12)
 
 
 # ─── Session briefing ────────────────────────────────────────────────────────────
@@ -2131,6 +2193,9 @@ def _session_briefing(t: Telemetry):
 
 # ─── Lap announcement ────────────────────────────────────────────────────────────
 
+_prev_best_lap_ms = 0.0
+
+
 def _announce_lap(lap_num: int, time_ms: float, fuel_used: float, pos: int):
     if time_ms < 30000:
         return
@@ -2138,8 +2203,16 @@ def _announce_lap(lap_num: int, time_ms: float, fuel_used: float, pos: int):
     with _lock:
         t = _current
 
+    global _prev_best_lap_ms
     lap_s  = time_ms / 1000
-    is_pb  = t.best_lap_ms > 0 and time_ms <= t.best_lap_ms + 150
+    # Récord SOLO si mejora una vuelta ANTERIOR. AC ya pone best_lap_ms = esta
+    # vuelta al cruzar la meta, así que la vuelta 1 salía siempre "récord
+    # personal" y el LLM lo repetía.
+    if lap_num <= 1:
+        _prev_best_lap_ms = 0.0
+    is_pb  = _prev_best_lap_ms > 0 and time_ms < _prev_best_lap_ms
+    _prev_best_lap_ms = time_ms if _prev_best_lap_ms <= 0 else min(_prev_best_lap_ms, time_ms)
+    lap_str = _fmt_lap(time_ms)
     nat_p  = _natural_position(pos, t.cars)
 
     # Sector deltas (official 3 sectors)
@@ -2169,20 +2242,21 @@ def _announce_lap(lap_num: int, time_ms: float, fuel_used: float, pos: int):
     if t.session == 1:
         # Qualifying: focus on sector improvement, not fuel/position
         lap_ctx = (
-            f"CLASIFICACIÓN — Vuelta {lap_num} en {lap_s:.3f}s.{pb_note}{sector_note}"
+            f"CLASIFICACIÓN — Vuelta {lap_num} en {lap_str}.{pb_note}{sector_note}"
             f" Di el tiempo y UN ajuste concreto de pilotaje para la próxima vuelta.{motivation}"
         )
     elif t.session in (3, 4):
         # Hotlap: pure coaching
         lap_ctx = (
-            f"HOTLAP — Vuelta {lap_num} en {lap_s:.3f}s.{pb_note}{sector_note}"
+            f"HOTLAP — Vuelta {lap_num} en {lap_str}.{pb_note}{sector_note}"
             f" Un consejo técnico concreto para mejorar.{motivation}"
         )
     else:
         # Practice or Race
         lap_ctx = (
-            f"Vuelta {lap_num} completada en {lap_s:.3f}s.{pb_note}{sector_note}{fuel_note}"
-            f" {nat_p}. Di el tiempo, posición y una táctica breve para la siguiente vuelta.{motivation}"
+            f"Vuelta {lap_num} completada en {lap_str}.{pb_note}{sector_note}{fuel_note}"
+            f" {nat_p}. Di el tiempo y la posición EXACTOS de estos datos y una táctica breve."
+            f" Máximo 2 frases cortas. No digas récord si no está indicado arriba.{motivation}"
         )
     prompt = f"{lap_ctx}\n{_ctx()}{zone_coaching}"
     r = _groq(prompt, max_tokens=140)
@@ -2771,17 +2845,23 @@ def main():
             # Drain deferred messages when clear of braking zone — descarta
             # las que ya vencieron (ver _DEFERRED_STALE_S) en vez de hablar
             # algo desconectado del momento que lo disparó.
-            if not _in_corner():
+            if _deferred_msgs and not _tts_busy.is_set():
                 with _deferred_lock:
-                    if _deferred_msgs:
-                        msgs = _deferred_msgs.copy()
-                        _deferred_msgs.clear()
-                        now_drain = time.time()
-                        for pri, txt, queued_at in msgs:
-                            if now_drain - queued_at <= _DEFERRED_STALE_S:
-                                _tts_pq.put((pri, txt))
-                            else:
-                                print(f"[TTS] Mensaje diferido descartado (venció): '{txt}'")
+                    now_drain = time.time()
+                    keep = []
+                    for m in _deferred_msgs:
+                        if now_drain - m[2] > m[3]:
+                            print(f"[TTS] Mensaje diferido descartado (venció): '{m[1]}'")
+                        else:
+                            keep.append(m)
+                    # Uno por vez, el más urgente primero, y solo si cabe en la
+                    # recta que queda por delante.
+                    keep.sort(key=lambda m: (m[0], m[2]))
+                    if keep and _can_talk(keep[0][1]):
+                        pri, txt = keep[0][0], keep[0][1]
+                        keep = keep[1:]
+                        _tts_pq.put((pri, txt))
+                    _deferred_msgs[:] = keep
 
             # Proactive alerts every 6 s (solo con el juego en pista)
             now = time.time()

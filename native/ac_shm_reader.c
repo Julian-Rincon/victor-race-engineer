@@ -278,8 +278,10 @@ static void write_fast(void) {
     jf("\"in_pitlane\":%s,",     grx->isInPitLane ? "true" : "false");
     jf("\"wx\":%.2f,", grx->carCoordinates[0]);
     jf("\"wz\":%.2f,", grx->carCoordinates[2]);
-    jf("\"vx\":%.2f,", phy->localVelocity.x);
-    jf("\"vz\":%.2f,", phy->localVelocity.z);
+    /* velocidad en marco MUNDIAL (como wx/wz); localVelocity es del coche y
+       mezclada con coordenadas mundiales invertía izquierda/derecha. */
+    jf("\"vx\":%.2f,", phy->velocity[0]);
+    jf("\"vz\":%.2f,", phy->velocity[2]);
     jf("\"dmg_front\":%.1f,",  phy->carDamage[0]);
     jf("\"dmg_rear\":%.1f,",   phy->carDamage[1]);
     jf("\"dmg_left\":%.1f,",   phy->carDamage[2]);

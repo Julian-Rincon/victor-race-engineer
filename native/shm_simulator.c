@@ -99,6 +99,8 @@ int main(void) {
     /* carDamage[5] @224 */
     w_f32(phy, 224, 10.0f); w_f32(phy, 228, 0.0f); w_f32(phy, 232, 5.0f);
     w_f32(phy, 236, 0.0f);  w_f32(phy, 240, 2.0f);
+    /* velocity[3] @32 — marco MUNDIAL (lo que usa el spotter) */
+    w_f32(phy, 32, 1.5f); w_f32(phy, 36, 0.0f); w_f32(phy, 40, 34.2f);
     /* localVelocity @568 (tras contactPoint@420+48, normal@468+48, heading@516+48, brakeBias@564) */
     w_f32(phy, 568, 1.5f); w_f32(phy, 572, 0.0f); w_f32(phy, 576, 34.2f);
 
