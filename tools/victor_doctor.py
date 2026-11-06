@@ -69,9 +69,14 @@ def check_config():
     used = cfg.ENV_FILES_USED
     (ok if used else warn)(f".env cargados: {[str(p) for p in used] or 'ninguno'}")
     keys = {n: bool(getattr(cfg, n)) for n in
-            ("GROQ_API_KEY", "CEREBRAS_API_KEY", "NVIDIA_API_KEY", "GEMINI_API_KEY", "DEEPGRAM_API_KEY")}
-    for n, v in keys.items():
-        (ok if v else warn)(f"{n}: {'presente' if v else 'falta'}")
+            ("GROQ_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_API_KEY", "NVIDIA_API_KEY",
+             "GEMINI_API_KEY", "MISTRAL_API_KEY", "DEEPGRAM_API_KEY")}
+    present = [n.removesuffix("_API_KEY").lower() for n, v in keys.items() if v]
+    unused = [n.removesuffix("_API_KEY").lower() for n, v in keys.items() if not v]
+    if present:
+        ok(f"keys: {', '.join(present)}" + (f" + LLM local {cfg.LOCAL_LLM_MODEL}" if cfg.LOCAL_LLM_MODEL else ""))
+    # Proveedores sin key = no configurados a propósito, no es un problema.
+    print(f"        no usados: {', '.join(unused)}")
     if not any(keys.values()):
         warn(f"sin keys: Victor funcionará en modo local (STT local + respuestas sin LLM). "
              f"Crea {cfg.USER_ENV_PATH} a partir de .env.example")
@@ -90,8 +95,7 @@ def check_brain(skip: bool):
     any_ok = False
     for b in brain.backends:
         if not b.api_key:
-            warn(f"{b.name}: sin key")
-            continue
+            continue                                # no configurado a propósito
         others = [x for x in brain.backends if x is not b]
         saved = [(x, x.api_key) for x in others]
         for x in others:
