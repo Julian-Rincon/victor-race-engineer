@@ -59,8 +59,22 @@ por si le sirve a alguien más de la comunidad de sim racing en Linux.
   (tolerante a que la transcripción lo escuche mal). Evita que música o
   conversación de fondo dispare respuestas sin que nadie le hable.
 - **Cerebro multi-backend con failover** — Groq → Cerebras → NVIDIA NIM →
-  Gemini, con circuit breaker; si un proveedor falla o está caído, sigue
-  funcionando con el siguiente sin que se note.
+  Gemini (+ un backend propio OpenAI-compatible opcional), con circuit
+  breaker; si un proveedor falla o está caído, sigue con el siguiente.
+- **Autocuración de modelos** — si un proveedor retira el modelo configurado
+  (pasó con `llama-3.3-70b-versatile` y `gemini-2.0-flash` en 2026), Victor
+  consulta `/models` y cambia solo a uno vivo. Key inválida o sin crédito
+  (401/402/403) aparta ese backend toda la sesión; 429 respeta `Retry-After`.
+- **Funciona sin red** — STT local con faster-whisper en CPU (0 VRAM, ~1 s por
+  comando) si la nube no responde, y respuestas deterministas desde la
+  telemetría (combustible, gaps, neumáticos, daños, posición, sectores) si no
+  hay LLM: Victor nunca se queda callado.
+- **Audio ducking nativo (PipeWire)** — mientras Victor habla baja solo el
+  volumen de `acs.exe` y lo restaura exacto al terminar (no toca el volumen
+  maestro, ni EasyEffects, ni otras apps).
+- **Voz que se entiende** — números y símbolos se reescriben antes de Piper
+  ("P4" → "cuarto", "104°C" → "104 grados", "+0.32s" → "más 0 coma 32
+  segundos", "1:42.345" → "1 minuto 42 con 345").
 
 ## Cómo funciona (arquitectura)
 
@@ -153,21 +167,15 @@ junto al propio binario.
 
 ### Configuración (API keys)
 
-`victor_config.py` busca las keys primero en el entorno del proceso, y si no
-las encuentra cae a un `.env` con nombres `NEXUS_*` (herencia de un proyecto
-personal más grande del que Victor salió). **No hace falta ese otro
-proyecto** — alcanza con exportar las variables vos mismo o crear un `.env`
-en la raíz con este formato:
+Copiá `.env.example` a `~/.config/victor/victor.env` (recomendado) o a
+`.env` en la raíz (ignorado por git) y completá las keys que tengas. Orden de
+búsqueda: entorno del proceso → `$VICTOR_ENV_FILE` → `<repo>/.env` →
+`~/.config/victor/victor.env` → el `.env` legado de nexus-core. Se aceptan
+nombres cortos (`GROQ_API_KEY`) o con prefijo `NEXUS_`.
 
-```bash
-NEXUS_GROQ_API_KEY=gsk_...
-NEXUS_CEREBRAS_API_KEY=csk_...
-NEXUS_NVIDIA_API_KEY=nvapi-...
-NEXUS_GEMINI_API_KEY=AIza...
-```
-
-Ninguna es obligatoria por sí sola — Victor usa la primera que encuentre
-disponible y sigue con la siguiente si una falla.
+Ninguna es obligatoria: sin keys Victor arranca en **modo local** (STT en CPU
++ respuestas sin LLM) y lo avisa en el log. `bash start.sh doctor` muestra qué
+se cargó y prueba cada backend en vivo.
 
 ## Uso
 
@@ -178,7 +186,15 @@ bash start.sh stop        # detiene todo
 bash start.sh status      # ¿qué está corriendo?
 bash start.sh logs        # tail -f del log del daemon
 bash start.sh shm-log     # tail -f del log del lector de memoria compartida
+bash start.sh doctor      # prueba real de todo el pipeline sin abrir AC
 ```
+
+`doctor` sintetiza con Piper comandos reales ("Victor, cuánto combustible me
+queda", "Victor, modo gap", una frase sin wake word…), los pasa por Silero
+VAD y el STT real, los manda al router de comandos con telemetría simulada de
+carrera y verifica la respuesta. También hace ping a cada LLM con key y
+revisa wine, el lector SHM y el micrófono. `--speak` reproduce las
+respuestas; `--no-llm` no gasta llamadas a APIs.
 
 Arrancalo **antes** de entrar a pista (no hace falta ningún widget dentro de
 AC — el lector de memoria compartida se conecta solo apenas el juego expone

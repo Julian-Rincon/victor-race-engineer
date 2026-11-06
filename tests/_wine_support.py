@@ -29,7 +29,10 @@ def wine_available() -> bool:
 
 def ac_is_running() -> bool:
     return subprocess.run(
-        ["pgrep", "-f", "AssettoCorsa.exe|acs.exe"], capture_output=True
+        # -x sobre el nombre del proceso (comm, máx 15 chars), NO -f: con -f
+        # cualquier shell cuya línea de comandos mencionara "acs.exe" (un grep,
+        # un heredoc) hacía creer que AC corría y se saltaban 57 tests.
+        ["pgrep", "-x", "acs.exe|acs_x86.exe|AssettoCorsa.*"], capture_output=True
     ).returncode == 0
 
 

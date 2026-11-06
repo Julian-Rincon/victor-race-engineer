@@ -108,7 +108,7 @@ def test_reasoning_model_gets_extra_token_budget():
         captured["max_tokens"] = json["max_tokens"]
         return FakeResp()
 
-    with patch.object(vb.requests, "post", side_effect=fake_post):
+    with patch.object(vb._session, "post", side_effect=fake_post):
         brain.complete("sys", [{"role": "user", "content": "hola"}], max_tokens=100)
     assert captured["max_tokens"] == 100 + cerebras_backend.reasoning_reserve
 
@@ -135,7 +135,7 @@ def test_truncated_reasoning_response_counts_as_failure_not_empty_reply():
             return TruncatedResp()
         return OkResp()
 
-    with patch.object(vb.requests, "post", side_effect=fake_post):
+    with patch.object(vb._session, "post", side_effect=fake_post):
         reply = brain.complete("sys", [{"role": "user", "content": "hola"}])
     assert reply == "respuesta gemini"
     assert brain.last_backend == "gemini"

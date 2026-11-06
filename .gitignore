@@ -8,3 +8,4 @@ models/
 data/
 .pytest_cache/
 .impeccable/
+.env

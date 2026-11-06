@@ -41,6 +41,7 @@ from piper.voice import PiperVoice
 
 import victor_brain
 import victor_config as cfg
+import victor_duck
 import victor_ears
 import victor_memory
 import victor_wake
@@ -67,6 +68,7 @@ TELEM_SLOW   = TELEM_SLOW_SHM
 # consume ~5GB de VRAM que ya casi se agota con el juego + stack gráfico (ver
 # incidente de freeze del 2026-07-03 en la memoria de NEXUS).
 _brain = victor_brain.VictorBrain()
+_ducker = victor_duck.Ducker(level=cfg.DUCK_LEVEL, **({"apps": cfg.DUCK_APPS} if cfg.DUCK_APPS else {}))
 GROQ_API_KEY = cfg.GROQ_API_KEY  # usado solo para el chequeo de warning en main()
 
 # Audio
@@ -1191,6 +1193,52 @@ def _transcribe(wav_path: str) -> str:
 
 # ─── TTS ─────────────────────────────────────────────────────────────────────────
 
+import re as _re
+
+_ORDINALS = {1: "primero", 2: "segundo", 3: "tercero", 4: "cuarto", 5: "quinto",
+             6: "sexto", 7: "séptimo", 8: "octavo", 9: "noveno", 10: "décimo"}
+
+
+def _ordinal(n: int) -> str:
+    return _ORDINALS.get(n, f"puesto {n}")
+
+
+def _lap_words(total_s: float, decimals: str) -> str:
+    m, sec = divmod(int(total_s), 60)
+    unit = "minuto" if m == 1 else "minutos"
+    return f"{m} {unit} {sec} con {decimals}" if m else f"{sec} con {decimals} segundos"
+
+
+def _speakable(text: str) -> str:
+    """Reescribe símbolos y formatos que Piper lee mal.
+
+    Medido con ida y vuelta Piper -> Whisper: "4° de 16" sonaba "cuatro grados
+    de 16", "104°C" -> "104 grados C", "+0.32s vs tu mejor" -> "más 0.32 SVS
+    tu mejor", "102.345s" -> "102.345 As". Se aplica a TODO lo que se
+    sintetiza, incluidas las respuestas del LLM."""
+    t = _re.sub(r"\s*[—–]\s*", ", ", text)
+    t = _re.sub(r"(\d+(?:[.,]\d+)?)\s*°\s*C\b", r"\1 grados", t)
+    t = _re.sub(r"\b(\d{1,2})°", lambda m: _ordinal(int(m.group(1))), t)
+    t = _re.sub(r"\bP(\d{1,2})\b", lambda m: _ordinal(int(m.group(1))), t)
+    # 1:42.345 -> 1 minuto 42 con 345
+    t = _re.sub(r"\b(\d{1,2}):(\d{2})[.,](\d{1,3})\b",
+                lambda m: _lap_words(int(m.group(1)) * 60 + int(m.group(2)), m.group(3)), t)
+    # 102.345s (tiempo de vuelta en segundos) -> 1 minuto 42 con 345
+    t = _re.sub(r"(?<![\d+-])(\d{2,3})[.,](\d{1,3})\s*s\b",
+                lambda m: _lap_words(int(m.group(1)), m.group(2)) if int(m.group(1)) >= 60
+                else f"{m.group(1)} coma {m.group(2)} segundos", t)
+    # +0.32s / -1.2s -> más 0 coma 32 segundos
+    t = _re.sub(r"([+-])(\d+)[.,](\d+)\s*s\b",
+                lambda m: f"{'más' if m.group(1) == '+' else 'menos'} {m.group(2)} coma {m.group(3)} segundos", t)
+    t = _re.sub(r"\b(\d+)[.,](\d+)\s*s\b", r"\1 coma \2 segundos", t)
+    t = _re.sub(r"\b(\d+)\s*s\b", r"\1 segundos", t)
+    t = _re.sub(r"(\d+(?:[.,]\d+)?)\s*L/v\b", r"\1 litros por vuelta", t)
+    t = _re.sub(r"(\d+(?:[.,]\d+)?)\s*L\b", r"\1 litros", t)
+    t = _re.sub(r"\s*%", " por ciento", t)
+    t = _re.sub(r"\bvs\.?\b", "contra", t)
+    return _re.sub(r"\s{2,}", " ", t).strip()
+
+
 _piper: Optional[PiperVoice] = None
 
 def _load_piper():
@@ -1225,7 +1273,7 @@ def _speak_piper(text: str) -> bool:
         return False
     tmp = None
     try:
-        chunks = list(_piper.synthesize(text))
+        chunks = list(_piper.synthesize(_speakable(text)))
         if not chunks:
             return False
         sample_rate = chunks[0].sample_rate
@@ -1262,7 +1310,7 @@ def _speak_espeak(text: str):
     words = len(text.split())
     est_duration_s = words / (_ESPEAK_SPEED_WPM / 60.0)
     try:
-        subprocess.run(["espeak-ng", "-v", "es-419", "-s", str(_ESPEAK_SPEED_WPM), "-a", "180", text],
+        subprocess.run(["espeak-ng", "-v", "es-419", "-s", str(_ESPEAK_SPEED_WPM), "-a", "180", _speakable(text)],
                        capture_output=True, timeout=_tts_timeout(est_duration_s))
     except Exception as e:
         print(f"[TTS espeak] {e}")
@@ -1281,9 +1329,14 @@ def _tts_worker():
         _last_message = text
         try:
             print(f"\n[Victor P{pri}] {text}")
+            _ducker.duck()          # baja SOLO el juego mientras Victor habla
             if not _speak_piper(text):
                 _speak_espeak(text)
         finally:
+            # Restaurar ya si no hay más mensajes en cola; si hay, se mantiene
+            # agachado y no "bombea" el volumen entre frases seguidas.
+            if _tts_pq.empty():
+                _ducker.restore()
             _tts_finished_at = time.time()
             _tts_busy.clear()
             _tts_pq.task_done()
@@ -1990,6 +2043,9 @@ def _session_briefing(t: Telemetry):
         r = _groq(prompt, max_tokens=130)
         if r:
             _say(f"Briefing de pre-carrera. {r}")
+        else:
+            _say(f"Carrera en {t.track}. Llevas {t.fuel:.0f} litros. "
+                 + (mem_ctx.splitlines()[0] if mem_ctx else "Vamos, a por ello."))
 
     elif t.session == 1:
         # Qualifying: push mode, tyre strategy, traffic avoidance
@@ -2085,8 +2141,9 @@ def _announce_lap(lap_num: int, time_ms: float, fuel_used: float, pos: int):
         )
     prompt = f"{lap_ctx}\n{_ctx()}{zone_coaching}"
     r = _groq(prompt, max_tokens=140)
-    if r:
-        _say(r)
+    if not r:
+        r = f"Vuelta {lap_num}, {_fmt_lap(time_ms)}.{' Vuelta rápida.' if is_pb else ''} {nat_p.capitalize()}."
+    _say(r)
 
     # Gap mode: say gaps after lap announcement
     if _gap_mode and t.cars_data and t.lap >= 2:
@@ -2137,6 +2194,9 @@ def _post_race_debrief(t: Telemetry, laps: list):
     r = _groq(prompt, max_tokens=160)
     if r:
         _say(f"Debrief de carrera. {r}")
+    else:
+        _say(f"Carrera terminada. {_natural_position(final_pos, t.cars).capitalize()}. "
+             f"Mejor vuelta {_fmt_lap(best_lap_ms)}, {total_laps} vueltas.")
 
     victor_memory.record_debrief(
         t.track, t.car, best_lap_ms=best_lap_ms,
@@ -2144,26 +2204,101 @@ def _post_race_debrief(t: Telemetry, laps: list):
         debrief_note=r[:200] if r else "",
     )
 
+# ─── Respuestas sin LLM ───────────────────────────────────────────────────────────
+
+def _fmt_lap(ms: float) -> str:
+    if ms <= 0:
+        return "sin tiempo"
+    m, sec = divmod(ms / 1000.0, 60)
+    return f"{int(m)}:{sec:06.3f}" if m >= 1 else f"{sec:.3f}"
+
+
+def _local_reply(kind: str, t: Telemetry) -> str:
+    """Respuesta determinista desde la telemetría cuando no hay LLM."""
+    pos = _natural_position(t.position, t.cars).capitalize()
+    fuel = (f"Combustible {t.fuel:.1f} litros, unas {t.fuel_laps:.0f} vueltas."
+            if t.fuel > 0 and t.fuel_laps > 0 else
+            f"Combustible {t.fuel:.1f} litros." if t.fuel > 0 else "Sin dato de combustible.")
+    gaps = _gap_desc(t)
+    if kind == "fuel":
+        return fuel
+    if kind == "gap":
+        return (gaps.capitalize() + ".") if gaps else "No tengo datos de rivales ahora."
+    if kind == "pos":
+        return f"{pos}." + (f" {gaps.capitalize()}." if gaps else "")
+    if kind == "tyres":
+        wear = min(t.tyre_wear_fl, t.tyre_wear_fr, t.tyre_wear_rl, t.tyre_wear_rr)
+        return (f"Delanteras {t.tyre_fl:.0f} y {t.tyre_fr:.0f} grados, traseras {t.tyre_rl:.0f} y "
+                f"{t.tyre_rr:.0f}. Desgaste mínimo {wear:.0f} por ciento.")
+    if kind == "damage":
+        worst = max(t.dmg_front, t.dmg_rear, t.dmg_left, t.dmg_right)
+        if worst < 1:
+            return "Sin daños, coche limpio."
+        return (f"Daño delante {t.dmg_front:.0f}, detrás {t.dmg_rear:.0f}, izquierda {t.dmg_left:.0f}, "
+                f"derecha {t.dmg_right:.0f} por ciento." + (" Considera boxes." if worst >= 30 else ""))
+    if kind == "pit":
+        if t.fuel_laps > 0:
+            return f"{fuel} Si no hay daño, alarga hasta que queden dos vueltas de margen."
+        return fuel
+    if kind == "sector":
+        if len(t.last_splits) == len(t.best_splits) == 3 and t.last_splits:
+            d = [(t.last_splits[i] - t.best_splits[i]) / 1000 for i in range(3)]
+            w = max(range(3), key=lambda i: d[i])
+            return f"Pierdes más en el sector {w+1}, {d[w]:+.2f} contra tu mejor."
+        return "Aún no tengo sectores completos."
+    # status / setup / free
+    base = f"{pos}. {fuel}" + (f" {gaps.capitalize()}." if gaps else "")
+    if kind in ("setup", "free"):
+        return "Sin conexión con el cerebro, te doy lo básico. " + base
+    return base
+
+
 # ─── Voice command processor ─────────────────────────────────────────────────────
 
 _MUTE_KW     = {"cállate","silencio","para","basta","quiet","callate"}
 _UNMUTE_KW   = {"habla","vuelve","informame","continúa","resume","sigue"}
+_MUTE_STRONG_KW   = {"cállate","callate","silencio","quiet","modo silencio"}
+_UNMUTE_STRONG_KW = {"vuelve a hablar","ya puedes hablar","puedes hablar","informame","infórmame"}
 _REPEAT_KW   = {"repite","otra vez","qué dijiste","repeat","say again","no te escuché"}
 _STATUS_KW   = {"estado","update","qué pasa","cómo vamos","full status","dame un status","resumen"}
-_FUEL_KW     = {"combustible","fuel","cuánto fuel","cuántas vueltas","cuánto queda"}
-_GAP_KW      = {"gap","brecha","diferencia","cuánto le llevo","distancia","cuánto hay"}
-_TYRE_KW     = {"neumáticos","neumas","gomas","tires","tyres","temperatura","desgaste","presión"}
+_FUEL_KW     = {"combustible","fuel","gasolina","nafta","cuánto fuel","cuántas vueltas","cuánto queda"}
+_GAP_KW      = {"gap","gaps","brecha","diferencia","cuánto le llevo","distancia","cuánto hay",
+                "el de adelante","el de delante","el de atrás","el de detrás","rival","rivales"}
+_TYRE_KW     = {"neumáticos","neumático","neomáticos","neumas","gomas","llantas","cauchos","ruedas",
+                "tires","tyres","temperatura","desgaste","presión"}
 _PIT_KW      = {"pit","pitstop","boxes","cuándo entro","ventana","estrategia","strategy"}
 _POS_KW      = {"posición","donde estoy","position","puesto","lugar","cómo voy"}
 _SECTOR_KW   = {"sector","sectores","dónde pierdo","dónde gano","análisis"}
-_DMG_KW      = {"daño","damage","carrocería","suspensión","accidente","golpe","choque"}
+_DMG_KW      = {"daño","daños","dañado","roto","damage","carrocería","suspensión","accidente","golpe","choque"}
 _SETUP_KW    = {"setup","configuración","alerón","balance","frenada","presiones","mapa"}
 _GAP_MODE_KW = {"modo gap","gap mode","dime los gaps","activa gap mode","activa gaps"}
-_NO_GAP_KW   = {"para gaps","stop gaps","desactiva gaps","no más gaps"}
+_NO_GAP_KW   = {"para gaps","para los gaps","stop gaps","desactiva gaps","desactiva los gaps",
+                "quita los gaps","no más gaps","sin gaps"}
+
+
+_KW_ACCENTS = str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuaeiouu")
+_KW_PUNCT = str.maketrans({c: " " for c in ".,;:¿?¡!\"'()-"})
+
+
+def _norm_cmd(text: str) -> str:
+    """minúsculas, sin tildes ni puntuación, espacios colapsados."""
+    return " ".join(text.lower().translate(_KW_ACCENTS).translate(_KW_PUNCT).split())
 
 
 def _words(text: str) -> set:
-    return set(text.lower().replace(",","").replace(".","").replace("¿","").replace("?","").split())
+    return set(_norm_cmd(text).split())
+
+
+def _kw_hit(text: str, kws: set) -> bool:
+    """True si `text` contiene alguna keyword de `kws`.
+
+    Antes se hacía `set(text.split()) & kws`: las keywords de VARIAS palabras
+    ("modo gap", "para gaps", "otra vez", "cuánto queda") nunca coincidían, y
+    las tildes que el STT pone o no pone ("cómo vamos" vs "como vamos",
+    "dónde estoy" vs "donde estoy") rompían el match. Ahora se compara el texto
+    normalizado con límites de palabra."""
+    padded = f" {_norm_cmd(text)} "
+    return any(f" {_norm_cmd(k)} " in padded for k in kws)
 
 
 def _handle_voice(wav_path: str):
@@ -2192,31 +2327,37 @@ def _handle_voice(wav_path: str):
             return
 
         print(f"[Piloto] {text}")
-        words = _words(text)
+        hit = lambda kws: _kw_hit(text, kws)
 
         # ── Quick local commands (no LLM) ──
-        if words & _MUTE_KW:
-            _muted = True
-            _say("Entendido, me callo. Solo el spotter sigue activo.", priority=0)
+        # Gap mode ANTES que mute: "para los gaps" contiene "para" (mute) y
+        # silenciaba a Victor en vez de desactivar el gap mode.
+        if hit(_NO_GAP_KW):
+            _gap_mode = False
+            _say("Gap mode desactivado.")
             return
 
-        if words & _UNMUTE_KW:
-            _muted = False
-            _say("Estoy de vuelta.", priority=0)
-            return
-
-        if words & _REPEAT_KW:
-            _say(_last_message if _last_message else "Sin mensajes previos.", priority=0)
-            return
-
-        if words & _GAP_MODE_KW:
+        if hit(_GAP_MODE_KW):
             _gap_mode = True
             _say("Gap mode activo. Te digo los gaps en cada vuelta.")
             return
 
-        if words & _NO_GAP_KW:
-            _gap_mode = False
-            _say("Gap mode desactivado.")
+        n_words = len(_words(text))
+        # "para"/"basta"/"sigue"/"resume" son palabras comunes en preguntas
+        # normales ("¿para cuántas vueltas me alcanza?" silenciaba a Victor).
+        # Solo cuentan como orden si el comando es corto.
+        if hit(_MUTE_STRONG_KW) or (n_words <= 2 and hit(_MUTE_KW)):
+            _muted = True
+            _say("Entendido, me callo. Solo el spotter sigue activo.", priority=0)
+            return
+
+        if hit(_UNMUTE_STRONG_KW) or (n_words <= 3 and hit(_UNMUTE_KW)):
+            _muted = False
+            _say("Estoy de vuelta.", priority=0)
+            return
+
+        if hit(_REPEAT_KW):
+            _say(_last_message if _last_message else "Sin mensajes previos.", priority=0)
             return
 
         # ── Routed Groq queries with specific context ──
@@ -2224,10 +2365,12 @@ def _handle_voice(wav_path: str):
             t = _current
         ctx = _ctx()
 
-        if words & _STATUS_KW:
+        if hit(_STATUS_KW):
+            kind = "status"
             prompt = f"Estado completo de carrera solicitado por el piloto.\n{ctx}"
 
-        elif words & _FUEL_KW:
+        elif hit(_FUEL_KW):
+            kind = "fuel"
             fpl = []
             with _lock:
                 fpl = [r.fuel_used for r in _lap_history if r.fuel_used > 0.05]
@@ -2237,10 +2380,12 @@ def _handle_voice(wav_path: str):
                 f"Fuel: {t.fuel:.1f}L ~{t.fuel_laps:.1f} vueltas. Consumo: {avg_fpl:.2f}L/v.\n{ctx}"
             )
 
-        elif words & _GAP_KW:
+        elif hit(_GAP_KW):
+            kind = "gap"
             prompt = f"Piloto pregunta gaps con rivales. Describe de forma natural.\n{ctx}"
 
-        elif words & _TYRE_KW:
+        elif hit(_TYRE_KW):
+            kind = "tyres"
             min_w = min(t.tyre_wear_fl,t.tyre_wear_fr,t.tyre_wear_rl,t.tyre_wear_rr)
             prompt = (
                 f"Piloto pregunta neumáticos. "
@@ -2248,7 +2393,8 @@ def _handle_voice(wav_path: str):
                 f"Desgaste mínimo: {min_w:.0f}%.\n{ctx}"
             )
 
-        elif words & _PIT_KW:
+        elif hit(_PIT_KW):
+            kind = "pit"
             with _lock:
                 laps = list(_lap_history)
             fpl = [r.fuel_used for r in laps if r.fuel_used > 0.05]
@@ -2259,16 +2405,19 @@ def _handle_voice(wav_path: str):
                 f"Desgaste neumáticos mínimo {min(t.tyre_wear_fl,t.tyre_wear_fr,t.tyre_wear_rl,t.tyre_wear_rr):.0f}%.\n{ctx}"
             )
 
-        elif words & _POS_KW:
+        elif hit(_POS_KW):
+            kind = "pos"
             prompt = f"Piloto pregunta posición. {_natural_position(t.position, t.cars)}. {_gap_desc(t)}.\n{ctx}"
 
-        elif words & _SECTOR_KW:
+        elif hit(_SECTOR_KW):
+            kind = "sector"
             prompt = (
                 f"Piloto pregunta análisis de sectores. "
                 f"Última vuelta: {t.last_splits}, mejor: {t.best_splits}.\n{ctx}"
             )
 
-        elif words & _DMG_KW:
+        elif hit(_DMG_KW):
+            kind = "damage"
             prompt = (
                 f"Piloto pregunta por daños. "
                 f"Frente:{t.dmg_front:.0f}% Trasero:{t.dmg_rear:.0f}% "
@@ -2276,16 +2425,23 @@ def _handle_voice(wav_path: str):
                 f"¿Daño significativo? ¿Hay que ir a boxes?\n{ctx}"
             )
 
-        elif words & _SETUP_KW:
+        elif hit(_SETUP_KW):
+            kind = "setup"
             prompt = (
                 f"Piloto pregunta ajustes de setup durante la carrera en {t.track}. "
                 f"¿Qué cambios de mapa o ajuste recomiendas? ¿Alerón, frenada?\n{ctx}"
             )
 
         else:
+            kind = "free"
             prompt = f"{ctx}\n\nPregunta libre del piloto: {text}"
 
         reply = _groq(prompt)
+        if not reply:
+            # Sin LLM (sin red, keys caídas, modelos retirados): Victor antes se
+            # quedaba CALLADO ante cualquier pregunta. Ahora responde con los
+            # datos crudos de telemetría — menos elegante, pero útil en pista.
+            reply = _local_reply(kind, t)
         # Para poder diagnosticar reportes de "Victor se demora" sin adivinar:
         # tiempo total desde que terminó de grabar hasta que hay respuesta lista.
         print(f"[Piloto] respuesta lista en {time.monotonic()-_t0:.2f}s (transcripción + LLM)")
@@ -2483,9 +2639,18 @@ def main():
     print("=" * 60)
 
     print(f"[Brain] Backends: {_brain.status()}")
+    print(f"[Config] .env cargados: {[str(p) for p in cfg.ENV_FILES_USED] or 'ninguno'}")
     if not any(b.available() for b in _brain.backends):
-        print("[WARN] Ningún backend de LLM tiene API key — revisa .env de NEXUS "
-              f"({cfg.NEXUS_ENV_PATH}).")
+        print("[WARN] Ningún backend de LLM tiene API key — Victor responderá solo con "
+              "datos de telemetría. Pon tus keys en ~/.config/victor/victor.env "
+              "(ver .env.example) o define VICTOR_ENV_FILE.")
+    victor_brain.preload_local_stt()
+
+    # start.sh stop manda SIGTERM: sin esto, morir a mitad de una frase dejaba
+    # el juego con el volumen agachado hasta reiniciarlo.
+    import atexit, signal
+    atexit.register(_ducker.restore)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     print("[DB] Cargando base de datos de carros AC...", end=" ", flush=True)
     _car_db = _build_car_db()
@@ -2578,6 +2743,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[Victor] Apagando...")
+        _ducker.restore()
         _tts_pq.put((99, None))
 
 

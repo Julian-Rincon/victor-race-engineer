@@ -163,14 +163,22 @@ case "${1:-tray}" in
     fi
     ;;
 
+  doctor)
+    # Prueba real de punta a punta sin AC: keys, LLM, Piper, VAD, STT,
+    # comandos de voz -> respuesta, wine/SHM/mic. Pasar --speak / --no-llm.
+    shift
+    exec python3 "$(dirname "$(readlink -f "$0")")/tools/victor_doctor.py" "$@"
+    ;;
+
   *)
-    echo "Uso: $0 {tray|start|stop|stop-tray|logs|status}"
+    echo "Uso: $0 {tray|start|stop|stop-tray|logs|status|doctor}"
     echo "  tray      — Lanza la app en bandeja del sistema (recomendado)"
     echo "  start     — Solo el daemon (sin GUI)"
     echo "  stop      — Detiene el daemon"
     echo "  stop-tray — Detiene la bandeja"
     echo "  logs      — Ver logs en tiempo real"
     echo "  status    — Estado actual"
+    echo "  doctor    — Prueba real de todo el pipeline sin abrir AC (--speak, --no-llm)"
     exit 1
     ;;
 esac
