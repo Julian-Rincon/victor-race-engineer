@@ -81,24 +81,21 @@ def _make_icon(ac_connected: bool) -> Image.Image:
 
 # ── daemon ───────────────────────────────────────────────────────────────────────
 
+START_SH = _REPO_ROOT / "start.sh"
+
+
 def _start_daemon():
+    """Delegar en start.sh: lanza el lector SHM (Wine) + engineer.py y lleva
+    los PID files. Antes la bandeja lanzaba SOLO engineer.py — sin el lector
+    de memoria compartida Victor no recibía telemetría real de AC."""
     if _is_running():
         return
-    log = open(LOG_FILE, "a")
-    proc = subprocess.Popen(
-        [sys.executable, str(ENGINEER_DIR / "engineer.py")],
-        stdout=log, stderr=log,
-    )
-    PID_FILE.write_text(str(proc.pid))
+    subprocess.run(["bash", str(START_SH), "start"], capture_output=True, timeout=30)
+
 
 def _stop_daemon():
-    if PID_FILE.exists():
-        try:
-            pid = int(PID_FILE.read_text().strip())
-            os.kill(pid, 15)   # SIGTERM
-        except Exception:
-            pass
-        PID_FILE.unlink(missing_ok=True)
+    subprocess.run(["bash", str(START_SH), "stop"], capture_output=True, timeout=30)
+
 
 # ── acciones de menú ─────────────────────────────────────────────────────────────
 

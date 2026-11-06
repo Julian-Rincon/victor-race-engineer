@@ -76,6 +76,10 @@ _stop_tracked() {
 
 case "${1:-tray}" in
   tray)
+    if [[ -f "$TRAY_PID_FILE" ]] && kill -0 "$(cat "$TRAY_PID_FILE")" 2>/dev/null; then
+      echo "[Victor] La bandeja ya está corriendo (PID $(cat "$TRAY_PID_FILE"))."
+      exit 0
+    fi
     echo "[Victor] Iniciando bandeja del sistema..."
     nohup python3 "$VICTOR_SRC/victor_tray.py" \
       > "/tmp/ac-engineer-tray.log" 2>&1 &
@@ -134,6 +138,9 @@ case "${1:-tray}" in
       kill "$PID" 2>/dev/null && echo "[Victor] Tray detenido." || echo "[Victor] Tray ya terminado."
       rm -f "$TRAY_PID_FILE"
     fi
+    # La bandeja es dueña del daemon: cerrarla sin Victor colgado de fondo.
+    _stop_tracked "$PID_FILE" "Daemon" "engineer\.py"
+    _stop_tracked "$SHM_PID_FILE" "SHM reader" "ac_shm_reader\.exe"
     ;;
 
   logs)
