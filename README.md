@@ -9,6 +9,8 @@
   español, corriendo 100% nativo en Linux.
 </p>
 
+<p align="center"><a href="https://julian-rincon.github.io/assets/videos/victor.mp4"><img src="https://julian-rincon.github.io/assets/videos/victor.jpg" width="720" alt="▶ Ver el video (~1 min, en inglés con subtítulos)"></a><br><sub>▶ Ver el video (~1 min, en inglés con subtítulos)</sub></p>
+
 <p align="center">
   <a href="https://github.com/Julian-Rincon/victor-race-engineer/actions/workflows/ci.yml">
     <img src="https://github.com/Julian-Rincon/victor-race-engineer/actions/workflows/ci.yml/badge.svg" alt="CI">
