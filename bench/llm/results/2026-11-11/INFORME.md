@@ -1,7 +1,7 @@
 # Benchmark del LLM local de Victor — `gemma4:e2b` vs `qwen3.5:4b`
 
 **Fecha:** 2026-11-11 22:26 · **Equipo:** 13th Gen Intel(R) Core(TM) i7-13620H · 31 GB RAM · 16 hilos
-**Servidor:** Ollama propio solo-CPU en `127.0.0.1:11436` (PID **128823**, sigue corriendo; apágalo tú).
+**Servidor:** Ollama propio solo-CPU en `127.0.0.1:11436`.
 **Modelos:** `gemma4:e2b` (actual) y `qwen3.5:4b` (candidato), ambos ya descargados.
 
 ## 1. Metodología
