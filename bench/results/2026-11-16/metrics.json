@@ -1,0 +1,268 @@
+{
+  "machine": {
+    "date": "2026-11-16 14:58:07 -0500",
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+    "cpu_threads": 16,
+    "python": "3.14.10",
+    "platform": "Linux-7.3.3-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "git_commit": "fc1fcca"
+  },
+  "quick": false,
+  "telemetry_parse": {
+    "fast_packet": {
+      "n": 5000,
+      "p50_us": 37.93,
+      "p95_us": 75.78,
+      "p99_us": 78.2,
+      "max_us": 130.41,
+      "mean_us": 43.43,
+      "bytes": 6049,
+      "packets_per_s": 23028,
+      "mb_per_s": 139.3
+    },
+    "slow_packet_nonfinite": {
+      "n": 5000,
+      "p50_us": 9.06,
+      "p95_us": 9.62,
+      "p99_us": 11.41,
+      "max_us": 26.86,
+      "mean_us": 9.13,
+      "bytes": 121,
+      "packets_per_s": 109577,
+      "mb_per_s": 13.3
+    },
+    "note": "Lectura de disco + json.loads de engineer._read_json_file; el paquete rápido lleva las claves de native/ac_shm_reader.c y 23 rivales en cars_data. El lector real escribe a ~10 Hz."
+  },
+  "spotter": {
+    "per_frame": {
+      "n": 5000,
+      "p50_us": 8.16,
+      "p95_us": 8.83,
+      "p99_us": 11.43,
+      "max_us": 20.43,
+      "mean_us": 8.27
+    },
+    "announce_delay_sim": {
+      "frame_rate_hz": 10,
+      "overlap_to_call_ms": 300,
+      "call_text": "Coche derecha.",
+      "clear_to_call_ms": 1000,
+      "clear_text": "Despejado.",
+      "config": {
+        "SPOTTER_CONFIRM_S": 0.15,
+        "SPOTTER_CLEAR_S": 0.8
+      }
+    },
+    "note": "_run_spotter con 23 rivales, ciclando despejado / derecha / izquierda / 3-wide. announce_delay_sim es tiempo SIMULADO a 10 Hz (debounce de diseño), no tiempo de CPU."
+  },
+  "alerts": {
+    "fast_alerts_per_call": {
+      "n": 5000,
+      "p50_us": 0.21,
+      "p95_us": 0.69,
+      "p99_us": 0.75,
+      "max_us": 10.75,
+      "mean_us": 0.29
+    },
+    "proactive_alerts_per_call": {
+      "n": 5000,
+      "p50_us": 2.67,
+      "p95_us": 39.78,
+      "p99_us": 72.54,
+      "max_us": 181.18,
+      "mean_us": 18.24
+    },
+    "note": "_check_fast_alerts con 1 de cada 10 frames con bloqueo de freno y 1 con salida de pista; _check_proactive_alerts con combustible bajo y neumático caliente (dispara avisos, sujeto a cooldown). TTS reemplazado por un no-op."
+  },
+  "pit_strategy": {
+    "calc_fuel_laps": {
+      "n": 5000,
+      "p50_us": 0.49,
+      "p95_us": 0.55,
+      "p99_us": 0.7,
+      "max_us": 7.85,
+      "mean_us": 0.5
+    },
+    "local_reply_pit": {
+      "n": 5000,
+      "p50_us": 2.75,
+      "p95_us": 2.9,
+      "p99_us": 3.17,
+      "max_us": 17.52,
+      "mean_us": 2.77
+    },
+    "fuel_cases": [
+      {
+        "case": "fuel_1",
+        "litros": 18.4,
+        "l_por_vuelta": 2.3,
+        "vueltas_restantes": 9,
+        "vueltas_de_combustible": 8.0,
+        "conclusion": "no llega",
+        "correcta": true
+      },
+      {
+        "case": "fuel_2",
+        "litros": 22.0,
+        "l_por_vuelta": 2.6,
+        "vueltas_restantes": 8,
+        "vueltas_de_combustible": 8.46,
+        "conclusion": "llega",
+        "correcta": true
+      },
+      {
+        "case": "fuel_3",
+        "litros": 9.6,
+        "l_por_vuelta": 2.1,
+        "vueltas_restantes": 5,
+        "vueltas_de_combustible": 4.57,
+        "conclusion": "no llega",
+        "correcta": true
+      }
+    ],
+    "fuel_cases_correct": "3/3",
+    "note": "Camino determinista (sin LLM). Los casos son los 3 de bench/llm; la conclusión sale de _calc_fuel_laps(litros) >= vueltas restantes con el consumo de las últimas vueltas."
+  },
+  "llm_chain": {
+    "first_backend_ok": {
+      "n": 300,
+      "p50_ms": 0.506,
+      "p95_ms": 0.718,
+      "p99_ms": 0.886,
+      "max_ms": 1.009,
+      "mean_ms": 0.523,
+      "backend": "groq"
+    },
+    "failover_after_http_500": {
+      "n": 300,
+      "p50_ms": 0.942,
+      "p95_ms": 1.33,
+      "p99_ms": 1.835,
+      "max_ms": 1.916,
+      "mean_ms": 0.996,
+      "backend": "cerebras"
+    },
+    "failover_after_429": {
+      "n": 300,
+      "p50_ms": 0.92,
+      "p95_ms": 1.128,
+      "p99_ms": 1.667,
+      "max_ms": 1.806,
+      "mean_ms": 0.961,
+      "backend": "cerebras"
+    },
+    "failover_after_connection_refused": {
+      "n": 300,
+      "p50_ms": 0.795,
+      "p95_ms": 1.132,
+      "p99_ms": 1.419,
+      "max_ms": 2.844,
+      "mean_ms": 0.841,
+      "backend": "cerebras"
+    },
+    "all_6_backends_down": {
+      "n": 300,
+      "p50_ms": 2.73,
+      "p95_ms": 3.387,
+      "p99_ms": 4.452,
+      "max_ms": 4.864,
+      "mean_ms": 2.845,
+      "backend": null
+    },
+    "circuit_breaker": {
+      "primary_paused_after_calls": 3,
+      "primary_available_after": false
+    },
+    "note": "VictorBrain.complete() real contra un servidor HTTP local OpenAI-compatible que responde al instante: es el sobrecoste de Victor (HTTP loopback + JSON + failover), NO la latencia de un proveedor real. El estado del breaker se reinicia en cada iteración."
+  },
+  "voice_turn": {
+    "fuel_question_llm_ok": {
+      "n": 300,
+      "p50_ms": 0.695,
+      "p95_ms": 0.729,
+      "p99_ms": 0.768,
+      "max_ms": 0.871,
+      "mean_ms": 0.687,
+      "transcript": "Victor, ¿cuánto combustible me queda?",
+      "reply": "Copiado, Julián. Te quedan unas once vueltas de combustible, vas bien."
+    },
+    "free_question_llm_ok": {
+      "n": 300,
+      "p50_ms": 0.7,
+      "p95_ms": 0.773,
+      "p99_ms": 0.797,
+      "max_ms": 0.836,
+      "mean_ms": 0.712,
+      "transcript": "Victor, ¿cómo ves la carrera?",
+      "reply": "Copiado, Julián. Te quedan unas once vueltas de combustible, vas bien."
+    },
+    "fuel_question_failover": {
+      "n": 300,
+      "p50_ms": 1.201,
+      "p95_ms": 1.247,
+      "p99_ms": 1.316,
+      "max_ms": 1.365,
+      "mean_ms": 1.189,
+      "transcript": "Victor, ¿cuánto combustible me queda?",
+      "reply": "Copiado, Julián. Te quedan unas once vueltas de combustible, vas bien."
+    },
+    "llm_down_deterministic_fallback": {
+      "n": 300,
+      "p50_ms": 2.965,
+      "p95_ms": 3.213,
+      "p99_ms": 3.366,
+      "max_ms": 3.841,
+      "mean_ms": 2.992,
+      "transcript": "Victor, ¿cuánto combustible me queda?",
+      "reply": "Combustible 26.0 litros, unas 11 vueltas."
+    },
+    "local_command_no_llm": {
+      "n": 300,
+      "p50_ms": 0.058,
+      "p95_ms": 0.062,
+      "p99_ms": 0.069,
+      "max_ms": 0.086,
+      "mean_ms": 0.058,
+      "transcript": "Victor, modo gap",
+      "reply": "Gap mode activo. Te digo los gaps en cada vuelta."
+    },
+    "note": "engineer._handle_voice() real, de la transcripción a la respuesta encolada en _say(). STT simulado (devuelve el texto al instante) y LLM simulado (servidor local inmediato): excluye grabación, VAD, STT real, red, inferencia del LLM y síntesis Piper."
+  },
+  "file_bridge": {
+    "write_to_current": {
+      "n": 300,
+      "p50_ms": 40.781,
+      "p95_ms": 76.71,
+      "p99_ms": 79.453,
+      "max_ms": 80.397,
+      "mean_ms": 40.877
+    },
+    "packets_written": 300,
+    "packets_missed_within_1s": 0,
+    "note": "Latencia del puente JSON-en-disco del CASE_STUDY: desde que os.replace() deja el paquete visible hasta que engineer._current lo refleja (sondeado cada 0,5 ms), con el _file_worker real (sondeo cada 40 ms, compuerta de 80 ms). Incluye en el mismo hilo el spotter y las alertas rápidas de cada paquete. Escritura a 10 Hz como el lector real."
+  },
+  "tests": {
+    "duration_s": 21.5,
+    "command": "python3 -m pytest -q --cov=src/victor",
+    "exit_code": 0,
+    "summary_line": "219 passed in 21.14s",
+    "passed": 219,
+    "coverage": {
+      "percent_covered": 61.9,
+      "covered_lines": 1525,
+      "num_statements": 2464,
+      "per_file": {
+        "ac_shm_reader.py": 0.0,
+        "engineer.py": 61.0,
+        "victor_brain.py": 63.9,
+        "victor_config.py": 97.6,
+        "victor_corner.py": 97.5,
+        "victor_duck.py": 93.2,
+        "victor_ears.py": 93.9,
+        "victor_memory.py": 97.1,
+        "victor_tray.py": 0.0,
+        "victor_wake.py": 95.7
+      }
+    }
+  }
+}
