@@ -250,6 +250,27 @@ pip install onnxruntime piper-tts          # además de pytest numpy scipy reque
 python3 -m pytest tests/test_v7_ears.py -v  # 10 passed
 ```
 
+## How it's measured
+
+Números reales de un i7-13620H, solo CPU. La metodología, el hardware y las
+limitaciones están en [`bench/README.md`](bench/README.md). Los JSON crudos
+están en `bench/results/` y `bench/llm/results/`.
+
+| Métrica | Valor | Comando | Fecha |
+|---|---|---|---|
+| Pruebas | 219 passed | `python3 -m pytest -q` | 2026-11-16 |
+| Cobertura de `src/victor` | 61,9 % (1525/2464 sentencias) | `python3 bench/run_metrics.py --tests` (con pytest-cov) | 2026-11-16 |
+| LLM local `gemma4:e2b`, latencia p50 / p95 (24 llamadas, CPU) | 1,72 s / 2,77 s (el 11-11: 1,85 s / 3,45 s) | `python3 bench/llm/bench_llm.py` | 2026-11-16 |
+| `gemma4:e2b` frente a `qwen3.5:4b`, p50 | 1,72 s frente a 17,16 s (el 11-11: 1,85 s frente a 9,92 s) | `python3 bench/llm/bench_llm.py` | 2026-11-16 |
+| LLM local: acierto "¿llego?" en combustible | 2/6 (el 11-11: 1/6); el camino determinista acierta 3/3 | `bench_llm.py` / `run_metrics.py` | 2026-11-16 |
+| Spotter, CPU por frame (23 rivales) p50 / p95 | 8,2 µs / 8,8 µs | `python3 bench/run_metrics.py` | 2026-11-16 |
+| Parser de telemetría (paquete de 6 KB) p50 / p95 | 38 µs / 76 µs (~23 000 paquetes/s) | `python3 bench/run_metrics.py` | 2026-11-16 |
+| Puente por archivo, escritura → `_current`, p50 / p95 | 40,8 ms / 76,7 ms (0 de 300 perdidos) | `python3 bench/run_metrics.py` | 2026-11-16 |
+| Turno de voz con STT y LLM simulados, p50 / p95 | 0,70 ms / 0,73 ms | `python3 bench/run_metrics.py` | 2026-11-16 |
+
+El turno de voz simulado mide solo el código de Victor: no incluye STT real,
+red, inferencia ni síntesis de voz. Nada se midió con Assetto Corsa abierto.
+
 ## Estado del proyecto
 
 Desarrollo activo, uso personal diario en carreras propias. La arquitectura
