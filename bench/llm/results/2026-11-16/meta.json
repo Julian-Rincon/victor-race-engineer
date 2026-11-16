@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-16 14:48:59 -0500",
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_version": "0.34.2",
+  "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+  "cpu_threads": 16,
+  "ram_total_gb": 31.0,
+  "models": [
+    "gemma4:e2b",
+    "qwen3.5:4b"
+  ],
+  "reps": 2,
+  "tasks": 12,
+  "options": {
+    "num_gpu": 0,
+    "num_thread": 6,
+    "num_predict": 110,
+    "temperature": 0.3,
+    "think": false
+  }
+}
