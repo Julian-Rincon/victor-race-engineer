@@ -42,7 +42,8 @@ por si le sirve a alguien más de la comunidad de sim racing en Linux.
 
 ## Qué hace
 
-- **Spotter determinístico** (sin LLM, <150ms) — avisa coches al lado,
+- **Spotter determinístico** (sin LLM, ~8 µs de CPU por frame; avisa ~0,2–0,3 s
+  después del solape por el debounce anti-ruido) — avisa coches al lado,
   "sigue ahí", "despejado", con la misma lógica de zonas que usa CrewChief.
 - **Alertas proactivas** — combustible bajo (aviso <3.5 vueltas, crítico
   <1.8), temperatura de neumáticos (aviso >95°C, crítico >105°C), desgaste,
