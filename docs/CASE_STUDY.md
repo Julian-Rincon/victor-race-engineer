@@ -91,10 +91,16 @@ restart without the reader caring. It's trivial to inspect live (just `cat`
 the JSON) and doesn't require the two sides to agree on a binary or
 versioned protocol. The cost is the latency and disk I/O the polling
 introduces — checking a file every 40-80ms instead of receiving data by
-push. There's no measurement of how much overhead this actually adds versus
-a socket. **TODO: measure the real latency of this path (file write → value
-available in `_current`) against a socket-based alternative before deciding
-whether it's worth changing.**
+push. Measured with the production `_file_worker` running in a thread and
+synthetic packets written at 10 Hz (`.tmp` + `os.replace()`, like the
+reader): from the write until the value is visible in `_current` is **p50
+40.8 ms, p95 76.7 ms, max 80.4 ms, 0 of 300 packets lost**
+(`bench/results/2026-11-16/metrics.json`, `python3 bench/run_metrics.py`).
+That is the polling interval and the 80 ms gate showing through, as
+expected. For a spotter that announces at 10 Hz it's within budget. A
+socket-based alternative hasn't been built, so there's no side-by-side
+comparison yet, and this was measured on Linux, not under Wine with the
+game running.
 
 ### Why failover across LLM providers instead of a single one
 
@@ -147,11 +153,39 @@ diagnose, live, whether a "Victor was slow" report from the driver was the
 STT, the LLM, or the failover jumping between backends — not an aggregated
 or tracked value over time.
 
-**TODO: no p50/p95 latency numbers have been collected for either path.**
-The `_handle_voice` log gives one data point per turn, but nothing
-aggregates it. Getting a real per-stage budget (VAD → STT → LLM → TTS →
-playback) would require instrumenting each stage separately, not just the
-total.
+**Measured latency (2026-11-16, i7-13620H, CPU only).** All figures come
+from `bench/results/2026-11-16/metrics.json` (`python3 bench/run_metrics.py
+--tests`) and `bench/llm/results/*/summary.json` (`python3
+bench/llm/bench_llm.py`). Method and limitations are in `bench/README.md`.
+
+| Path | p50 | p95 | Source |
+|---|---:|---:|---|
+| Spotter, CPU per frame (23 rivals) | 8.2 µs | 8.8 µs | `run_metrics.py` |
+| Spotter, overlap → "car right" (simulated 10 Hz) | 300 ms | — | `run_metrics.py`: the debounce, not CPU |
+| Telemetry parse, fast packet (6 KB) | 38 µs | 76 µs | `run_metrics.py`, ~23k packets/s |
+| Deterministic pit/fuel reply | 2.8 µs | 2.9 µs | `run_metrics.py`, 3/3 fuel cases correct |
+| Voice turn, transcript → reply queued (STT + LLM mocked) | 0.70 ms | 0.73 ms | `run_metrics.py` |
+| LLM chain failover after HTTP 500 (mock provider) | 0.94 ms | 1.33 ms | `run_metrics.py` |
+| Local LLM `gemma4:e2b`, Ollama on CPU, 24 calls | 1.85 s / 1.72 s | 3.45 s / 2.77 s | `bench_llm.py`, 2026-11-11 / 2026-11-16 |
+| Local LLM `qwen3.5:4b` (rejected), 24 calls | 9.92 s / 17.16 s | 15.48 s / 20.74 s | `bench_llm.py`, 2026-11-11 / 2026-11-16 |
+
+So the measured bottleneck is the LLM, by three to four orders of magnitude
+over Victor's own code. On the "<150ms" spotter figure: the deterministic
+path costs microseconds, but at the reader's 10 Hz the debounce puts the
+first call ~200–300 ms after the overlap begins.
+
+What is still **not** measured: a real voice-to-voice turn. STT (Groq or
+Deepgram), cloud LLM network latency, Piper synthesis and playback are
+excluded from the mocked voice-turn number, and nothing was measured with
+Assetto Corsa running. The `_handle_voice` log still gives only one data
+point per turn. A real per-stage budget (VAD → STT → LLM → TTS → playback)
+needs each stage instrumented in a live session.
+
+The local LLM is also weak at fuel reasoning. Given raw litres, consumption
+and laps remaining, `gemma4:e2b` reached the right "make it / don't make
+it" conclusion in 1/6 and 2/6 calls across the two runs (`qwen3.5:4b`: 0/6
+and 1/6). That is why fuel alerts, the pit window and the no-LLM fallback
+are deterministic.
 
 There's also a real-time constraint at the UX level, not the pipeline
 level: non-critical messages (`priority >= 2`) are deferred if the car is
